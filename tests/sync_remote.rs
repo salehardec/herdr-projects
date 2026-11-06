@@ -111,21 +111,28 @@ fn a_fetch_that_fails_is_not_a_sync_a_finished_turn_is_held_and_a_waiting_task_i
 }
 
 #[test]
-fn with_a_remote_but_pull_requests_off_tasks_land_in_your_local_branch_the_main_they_are_kept_up_to_date_with() {
+fn with_a_remote_but_pull_requests_off_the_branch_your_checkout_is_on_is_where_work_lands_at_origin() {
     let w = world_with(Opts { repo: true, origin: true, settings: json!({ "review.when": "never", "merge.pr": false }), ..Default::default() });
     let start = |title: &str, file: &str| { w.script(json!({ "worker": [{ "files": { "a.txt": file }, "commit": title, "note": format!("Did {title}.") }] })); let id = w.add(title); delegate(&id); assert_eq!(settle(&id).s("stage"), "approval"); id };
     let first = start("first", "first\n");
     let second = start("second", "second\n");
     assert!(!task(&first).b("pr")); assert_eq!(task(&second).s("syncBranch"), "main");
     w.script(json!({ "worker": [{ "note": null, "status": "working" }] })); // the agent of `second`, told about its conflict
+    // your own main does not move: the work lands on main at origin, and your checkout is left as it was
+    let mine = git(&w.root, &["rev-parse", "HEAD"]);
     finish_line::approve(&first, None, false).unwrap();
-    assert_eq!(settle(&first).s("stage"), "done");
-    let local = git(&w.root, &["rev-parse", "HEAD"]);
-    assert_ne!(local, git(&w.root, &["rev-parse", "origin/main"]), "landed here, not at the remote");
+    let t = settle(&first);
+    assert_eq!((t.s("stage"), t.s("msg")), ("done", "Merged into main at origin."), "{}", t.at("failure"));
+    let landed = git(&w.root, &["rev-parse", "origin/main"]);
+    assert_eq!(t.s("mergeCommit"), landed);
+    assert_ne!(landed, mine, "landed at the remote, not in your checkout");
+    assert_eq!(git(&w.root, &["rev-parse", "HEAD"]), mine, "your checkout is not moved");
+    assert_eq!(read(&w.root.join("a.txt")), "one\n", "nor its files");
+    // main moved at origin: the next task is brought up to date with that, and its conflict goes to its agent
     housekeep(&w);
     let t = settle(&second);
     assert_eq!(t.s("stage"), "working"); assert_eq!(t.at("failure").s("title"), "Merge conflict with main");
-    assert!(last_prompt(&w, &second).contains(&format!("Target commit: {local} (main)")), "{}", last_prompt(&w, &second));
+    assert!(last_prompt(&w, &second).contains(&format!("Target commit: {landed} (origin/main)")), "{}", last_prompt(&w, &second));
     assert!(finish_line::approve(&second, None, false).unwrap_err().msg.contains("not waiting for an approval"));
 }
 

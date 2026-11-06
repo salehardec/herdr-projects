@@ -1,6 +1,9 @@
-//! Landing on a branch named at the remote with no pull request (`workspace.from develop`, `merge.pr` off): a commit
-//! built from the reviewed one, as `merge.method` says, pushed to that branch at origin. No checkout is touched and
-//! nothing is forced: a branch that moved meanwhile is caught up with and checked again, under the same approval.
+//! Landing on a branch at the remote with no pull request (`workspace.from develop`, or no branch named at all: then
+//! the branch your checkout is on, `merge.pr` off): a commit built from the reviewed one, as `merge.method` says,
+//! pushed to that branch at origin. No checkout is touched and nothing is forced: a branch that moved meanwhile is
+//! caught up with and checked again, under the same approval. The remote is asked after the push, and only what it says
+//! is reported as merged (`git ls-remote`): a push git said went, but origin does not show, is a failed merge and the
+//! work stays where it is.
 use super::merge::{fail, landed, reverify, Fail};
 use crate::err::Res;
 use crate::finish::auto_merge::called_off;
@@ -8,6 +11,7 @@ use crate::flow;
 use crate::json::*;
 use crate::runner::Guard;
 use crate::store::failures::is_auth_failure;
+use crate::store::fetch::quiet_git;
 use crate::store::keys::{repo_keys, task_ref};
 use crate::store::repos::{git_out, git_slow, TIMED_OUT};
 use crate::store::settings::lookup::setting_text;
@@ -15,6 +19,13 @@ use crate::store::settings::values::ms;
 use crate::store::tasks::Task;
 use crate::sync;
 use std::path::Path;
+
+/// Where `b` stands at origin now, asked of the remote itself with a timeout and never a password: Err says why it
+/// could not be asked (what git said), Ok the commit it names (empty when the branch is not there).
+fn at_remote(tp: &Path, b: &str, ms: u64) -> Result<String, String> {
+    let out = quiet_git(tp, &["ls-remote", "origin", &format!("refs/heads/{b}")], ms)?;
+    Ok(out.split_whitespace().next().unwrap_or("").to_string())
+}
 
 /// Where `b` stood at origin when it was last fetched.
 fn at_origin(tp: &Path, b: &str) -> Res<String> { git_out(tp, &["rev-parse", "--verify", &format!("refs/remotes/origin/{b}^{{commit}}")]) }
@@ -28,7 +39,8 @@ fn build(tp: &Path, how: &str, parent: &str, head: &str, message: &str) -> Res<S
     if git_out(tp, &["rev-parse", &tree])? == git_out(tp, &["rev-parse", &format!("{parent}^{{tree}}")])? { return Ok(parent.into()); }
     git_out(tp, &["commit-tree", &tree, "-p", parent, "-m", message])
 }
-/// Runs once `sync::sync_main` found the task's worktree up to date with `origin/<b>`.
+/// Runs once `sync::sync_main` found the task's worktree up to date with `origin/<b>` — the branch the work lands on:
+/// one the task started from by name, or, with none named and `merge.pr` off, the branch your checkout is on.
 pub fn land(id: &str, g: &mut Guard, t: &Task, tree: &str, b: &str, how: &str) -> Res<()> {
     let tp = Path::new(tree);
     // Only the commit that was checked and reviewed lands.
@@ -49,7 +61,16 @@ pub fn land(id: &str, g: &mut Guard, t: &Task, tree: &str, b: &str, how: &str) -
     // A plain push: git itself refuses it when the branch moved at origin since it was fetched.
     let most = match ms(&setting_text("merge.pushTimeout", Some(t))) { 0 => u64::MAX, l => l as u64 };
     let said = match git_slow(tp, &["push", "origin", &format!("{new}:refs/heads/{b}")], most) {
-        Ok(_) => return landed(id, g, t, &format!("Merged into {b} at origin."), &head, &new),
+        Ok(_) => {
+            // git's word is not the remote's: origin is asked which commit it now calls `b`, and only that one is
+            // reported as merged. What it does not show leaves the work where it is, failed and kept.
+            let seen = match at_remote(tp, b, most) {
+                Ok(sha) if sha == new => return landed(id, g, t, &format!("Merged into {b} at origin."), &head, &new),
+                Ok(sha) => format!("origin/{b} is {}", if sha.is_empty() { "not there".to_string() } else { sha }),
+                Err(e) => format!("origin could not be asked: {e}"),
+            };
+            return fail(g, &format!("The push to {b} is not what origin shows"), &format!("Branch at origin: {b}\nCommit: {new}\nReviewed: {head}\n\nGit said the push went, and {seen}. Nothing is reported as merged, and the work is kept."), &format!("Make sure the remote takes the push to {b} and can be asked which commit it holds (git push origin {b}; git ls-remote origin {b}), then approve again."), Fail { agent_can_fix: false, auth: None, keep_intent: false });
+        }
         Err(e) if e.msg.contains(TIMED_OUT) => format!("{} (merge.pushTimeout): a slow pre-push hook? Raise it with herdr-projects set merge.pushTimeout 10m --repo {}", e.msg, t.s("repo")),
         Err(e) => e.msg,
     };

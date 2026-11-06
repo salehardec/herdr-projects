@@ -37,6 +37,13 @@ All of this runs with the board open or closed.
   (`git push origin <commit>:refs/heads/develop`, within `merge.pushTimeout`). No checkout is touched, yours included, and nothing is forced: when the branch moved at origin,
   git refuses the push, and the task catches up with it, is checked again and pushed under the same approval. A push
   origin refuses for another reason (a protected branch, a hook) waits for you with git's own words.
+- **The branch your checkout is on, with `merge.pr` off and no branch named** lands there too, at origin, the same way:
+  built from the reviewed commit by `merge.method`, pushed within `merge.pushTimeout`, nothing forced, and a branch that
+  moved meanwhile caught up with, checked again and pushed under the same approval. Your own copy of that branch is
+  never written to — it is only read for its name, not fetched, not merged into, not switched, whatever is unsaved in
+  your checkout — so `git pull` it yourself to see the work there. A checkout on no branch (a detached HEAD) has no
+  such branch: the task is held as behind main and says so. A repo with no origin has nowhere to push: there the work
+  is merged into your checkout, squashed by default, and a checkout with unsaved files stops it.
 - `workspace.setup` runs. Then the agent starts in that space's root pane, with the task and its rules.
 - **Outside git**, the agent works in place, in a plain Herdr space.
 - **At most `board.agents` (4) agents work at once.** More wait their turn. Tasks that wait for you hold no slot, nor
@@ -150,12 +157,17 @@ it merges:
 
 - **through the pull request**, only at the commit that was reviewed. A commit pushed to the pull request meanwhile
   withdraws the approval. On a repo with a merge queue, the task waits until GitHub says the pull request is merged;
-- **by a push to the branch it started from by name**, with no pull request (`workspace.from develop`, `merge.pr` off):
-  the reviewed commit, built by `merge.method`, never forced and never through your checkout;
-- **or locally**, squashed by default.
+- **by a push to a branch at origin**, with no pull request (`merge.pr` off): the branch the task started from by name
+  (`workspace.from develop`), or, when none was named, the branch your checkout is on. The reviewed commit, built by
+  `merge.method`, never forced, and never through your checkout: that branch is only read for its name there. Only what
+  origin shows after the push is reported as merged (`git ls-remote`): a push origin does not show fails the task and
+  keeps its worktree;
+- **or locally**, squashed by default — only in a repo with no origin at all, where there is nowhere to push to.
 
 A conflict found here goes back to the agent the same way, and the merge you approved is retried after its repair. A
-checkout with unsaved files is never forced. Merging without your yes: [merging by itself](gate.md#merging-by-itself).
+checkout with unsaved files is never forced — where the board merges into your checkout at all (a repo with no origin),
+unsaved files stop it; with an origin it is pushed from the task's own worktree and what is unsaved there does not
+matter. Merging without your yes: [merging by itself](gate.md#merging-by-itself).
 
 ### Closing GitHub issues
 
@@ -167,7 +179,7 @@ itself: never for you or a repo. `show <id>` lists it with the rest.
   the default branch. A pull request the agent opened itself gets the lines it lacks added (`gh pr edit`); so does one
   opened before the setting was said, right before it merges. Changed or cleared since, the board takes its own lines of
   the issues no longer named off again before it merges; while it cannot, nothing merges (the task says why).
-- **With no pull request** (a local merge, or a push to a named branch), and through one that merges into another branch than the default, the
+- **With no pull request** (a push to a branch at origin, or a local merge where there is no remote), and through one that merges into another branch than the default, the
   board closes each with `gh issue close` once the merge has landed, with a comment naming the task and the merge commit.
   So it does for work the agent put on main itself (`Already merged in #133`); work that needed no change closes none.
 
@@ -286,9 +298,11 @@ and finish again.
   date.
 
 **"Main" is where the task will land**: the remote's main when it lands through a pull request, or the branch it was
-started from by name (`workspace.from develop`), with or without one. Otherwise (no remote, or `pr` off and no branch
-named), the branch your checkout was on when the task first finished. For those, checking out another branch merges
-nothing into waiting tasks, and they are held as "behind main" until your checkout is back on it.
+started from by name (`workspace.from develop`), with or without one. Otherwise, with no pull request and no branch
+named, it is the branch your checkout is on — its copy at origin when there is one, so that a stale local branch is
+never what the work is built on; the local branch itself is only read for its name, and stays as behind as it was until
+you pull it. In a repo with no origin, it is that local branch. For those, checking out another branch merges nothing
+into waiting tasks, and they are held as "behind main" until your checkout is back on it.
 
 ### A review that passed is not repeated for a merge of main
 
