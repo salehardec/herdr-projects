@@ -30,7 +30,7 @@ members = ["crates/core", "crates/flow", "crates/board", "crates/web"]
 default-members = [".", "crates/core", "crates/flow", "crates/board", "crates/web"]
 
 [workspace.package]
-version = "1.2.27"
+version = "1.2.28"
 edition = "2024"
 license = "MIT"
 publish = false

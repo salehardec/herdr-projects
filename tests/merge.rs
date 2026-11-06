@@ -1,11 +1,38 @@
-//! Merging an approved task into your checkout: unsaved files there stop it and nothing is forced; a commit that
-//! reaches the branch during the merge is neither merged unseen nor deleted as merged.
+//! Merging an approved task with no pull request. In a repo with a remote, the branch your checkout is on is where the
+//! work lands, pushed there from the task's own worktree — never merged into your checkout, whatever is unsaved or
+//! checked out there, and never on your stale local copy of that branch. Only what origin shows after the push is
+//! reported as merged: a push origin refuses, and one git said went but origin does not show, fail the task and keep its
+//! worktree. With no remote at all the work is merged into your checkout, squashed as it always was, and unsaved files
+//! there stop it and nothing is forced.
 use crate::common;
 use common::*;
 use serde_json::json;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use sw::actions::finish_line;
 use sw::json::*;
+
+fn push_world(more: Value) -> World {
+    let mut s = json!({ "review.when": "never", "merge.pr": false });
+    for (k, v) in more.as_object().cloned().unwrap_or_default() { s[k] = v; }
+    world_with(Opts { repo: true, origin: true, settings: s, ..Default::default() })
+}
+fn bare(w: &World) -> PathBuf { w.base.join("origin.git") }
+fn origin(w: &World, b: &str) -> String { git(&bare(w), &["rev-parse", &format!("refs/heads/{b}")]) }
+fn has(w: &World, b: &str, file: &str) -> Option<String> { common::worktrees::git(&bare(w), &["show", &format!("{b}:{file}")]).ok() }
+fn hook(dir: &Path, name: &str, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let f = dir.join("hooks").join(name);
+    std::fs::write(&f, format!("#!/bin/sh\n{body}")).unwrap();
+    std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+/// Someone else pushes a commit to main at the remote: what they pushed.
+fn they_push(w: &World, file: &str, body: &str) -> String {
+    let other = w.base.join("other");
+    git(&w.base, &["clone", "-q", &bare(w).display().to_string(), &other.display().to_string()]);
+    std::fs::write(other.join(file), body).unwrap(); git(&other, &["add", "-A"]); git(&other, &["commit", "-qm", "theirs"]); git(&other, &["push", "-q", "origin", "main"]);
+    git(&other, &["rev-parse", "HEAD"])
+}
+fn approved(id: &str) -> Obj { finish_line::approve(id, None, false).unwrap(); settle(id) }
 
 #[test]
 fn unsaved_files_in_your_checkout_stop_the_merge_and_nothing_is_forced() {
@@ -45,4 +72,105 @@ fn a_commit_that_reaches_the_branch_while_it_is_being_merged_is_neither_merged_u
     assert_eq!(git(&w.root, &["log", "-1", "--format=%s", t.s("branch")]), "late");
     assert_eq!(git(&w.root, &["rev-parse", &format!("{}~1", t.s("branch"))]), reviewed);
     assert!(!w.state().arr("workspaces").iter().any(|x| x.s("workspace_id") == t.at("link").s("workspace")));
+}
+
+#[test]
+fn the_work_is_pushed_to_origin_and_your_checkout_is_left_as_it_was_even_with_unsaved_files() {
+    let w = push_world(json!({}));
+    let before = origin(&w, "main");
+    // your checkout: unsaved changes, an untracked file, and a branch that is what it was
+    std::fs::write(w.root.join("a.txt"), "yours\n").unwrap();
+    std::fs::write(w.root.join("new.txt"), "untracked\n").unwrap();
+    let mine = git(&w.root, &["rev-parse", "HEAD"]);
+    let id = to_approval(&w, "Work");
+    let tree = PathBuf::from(task(&id).t("worktree"));
+    let t = approved(&id);
+    assert_eq!((t.s("stage"), t.s("msg")), ("done", "Merged into main at origin."), "{}", t.at("failure"));
+    let landed = origin(&w, "main");
+    assert_eq!(t.s("mergeCommit"), landed, "the commit reported is the one origin shows");
+    assert_ne!(landed, before);
+    assert_eq!(git(&bare(&w), &["rev-parse", "main^"]), before, "one commit on top of main, not onto your own work");
+    assert_eq!(has(&w, "main", "f.txt").as_deref(), Some("v1"));
+    // your checkout is exactly as you left it: same branch, same commit, same files
+    assert_eq!((git(&w.root, &["symbolic-ref", "--short", "HEAD"]), git(&w.root, &["rev-parse", "HEAD"])), ("main".into(), mine));
+    assert_eq!((read(&w.root.join("a.txt")), read(&w.root.join("new.txt"))), ("yours\n".into(), "untracked\n".into()));
+    assert!(!w.root.join("f.txt").exists(), "nothing was merged or checked out here");
+    assert!(!tree.exists(), "and the task's own worktree is cleaned up");
+}
+
+#[test]
+fn a_push_origin_refuses_fails_the_task_and_keeps_the_worktree() {
+    let w = push_world(json!({}));
+    let before = origin(&w, "main");
+    let mine = git(&w.root, &["rev-parse", "HEAD"]);
+    hook(&bare(&w), "pre-receive", "echo 'GL-HOOK-ERR: main is a protected branch' >&2\nexit 1\n");
+    let id = to_approval(&w, "Refused");
+    let tree = task(&id).t("worktree");
+    let t = approved(&id);
+    assert_eq!((t.s("stage"), t.at("failure").s("title")), ("approval", "Could not push to main at origin"), "{}", t.at("failure"));
+    assert!(t.b("mergeFailed") && t.at("failure").s("detail").contains("main is a protected branch"), "{}", t.at("failure"));
+    assert_eq!(t.at("failure").at("auth"), &json!(false));
+    assert_eq!(origin(&w, "main"), before, "nothing landed");
+    assert_eq!(git(&w.root, &["rev-parse", "HEAD"]), mine);
+    assert!(Path::new(&tree).exists(), "the work is kept");
+    // the way is cleared: the same task lands on a second yes
+    std::fs::remove_file(bare(&w).join("hooks").join("pre-receive")).unwrap();
+    let t = approved(&id);
+    assert_eq!(t.s("stage"), "done", "{}", t.at("failure"));
+    assert_eq!(t.s("mergeCommit"), origin(&w, "main"));
+    assert_eq!(has(&w, "main", "f.txt").as_deref(), Some("v1"));
+}
+
+#[test]
+fn a_push_the_remote_does_not_show_is_not_reported_as_merged_and_the_worktree_stays() {
+    let w = push_world(json!({}));
+    let before = origin(&w, "main");
+    // origin takes the push and puts its branch back: git says it went, origin does not show that commit
+    hook(&bare(&w), "post-receive", "while read old new ref; do git update-ref -m 'put back' \"$ref\" \"$old\"; done\n");
+    let id = to_approval(&w, "Vanished");
+    let tree = task(&id).t("worktree");
+    let t = approved(&id);
+    assert_eq!((t.s("stage"), t.at("failure").s("title")), ("approval", "The push to main is not what origin shows"), "{}", t.at("failure"));
+    assert!(t.b("mergeFailed") && t.t("mergeCommit").is_empty(), "nothing is reported as merged");
+    assert!(t.at("failure").s("detail").contains("origin/main is"), "{}", t.at("failure"));
+    assert_eq!(origin(&w, "main"), before);
+    assert!(Path::new(&tree).exists(), "the work is kept");
+    std::fs::remove_file(bare(&w).join("hooks").join("post-receive")).unwrap();
+    let t = approved(&id);
+    assert_eq!(t.s("stage"), "done", "{}", t.at("failure"));
+    assert_eq!(t.s("mergeCommit"), origin(&w, "main"));
+}
+
+#[test]
+fn a_local_branch_that_is_behind_origin_is_not_the_base_the_work_lands_on() {
+    let w = push_world(json!({}));
+    // theirs is pushed while your local main stays behind: the board must land on origin's main, not on your copy
+    let theirs = they_push(&w, "theirs.txt", "theirs\n");
+    let stale = git(&w.root, &["rev-parse", "main"]);
+    assert_ne!(theirs, stale);
+    let id = to_approval(&w, "On the fresh main");
+    let t = approved(&id);
+    assert_eq!(t.s("stage"), "done", "{}", t.at("failure"));
+    assert_eq!(t.s("mergeCommit"), origin(&w, "main"));
+    assert_eq!(git(&bare(&w), &["rev-parse", "main^"]), theirs, "built on origin's main, not on your stale copy");
+    assert_eq!(has(&w, "main", "theirs.txt").as_deref(), Some("theirs"));
+    assert_eq!(has(&w, "main", "f.txt").as_deref(), Some("v1"));
+    assert_eq!(git(&w.root, &["rev-parse", "main"]), stale, "your own copy of main is untouched, as stale as it was");
+}
+
+#[test]
+fn a_checkout_on_no_branch_says_so_and_merges_nothing() {
+    let w = push_world(json!({}));
+    let before = origin(&w, "main");
+    git(&w.root, &["checkout", "-q", "--detach"]);
+    // work finished while your checkout is on no branch: it is held as behind main, saying why, and nothing is approved
+    w.script(json!({ "worker": [{ "files": { "f.txt": "v1\n" }, "commit": "v1", "note": "Did v1." }] }));
+    let id = w.add("No branch");
+    delegate(&id);
+    let t = settle(&id);
+    assert_eq!(t.s("stage"), "approval");
+    assert!(t.s("msg").contains("your checkout is on no branch"), "{}", t.s("msg"));
+    assert!(finish_line::approve(&id, None, false).unwrap_err().msg.contains("cannot be approved yet"));
+    assert_eq!(origin(&w, "main"), before);
+    assert!(Path::new(&t.s("worktree")).exists());
 }

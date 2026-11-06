@@ -2,14 +2,16 @@
 //! before a finished turn is checked and reviewed, again whenever main moves while the task waits for you (under
 //! `merge.sync approve` only a test merge then, sync/probe.rs), and one last time after you approve (land/). The agent
 //! hears about it only when a real conflict exists. A merge attempt that fails is always rolled back, and the human's
-//! checkout is never touched.
+//! checkout is never touched. Main is the remote's main for a task that lands through a pull request or on a branch it
+//! was started from by name; for one with no pull request and no branch named (land/merge.rs) it is where origin keeps
+//! the branch your checkout is on — your own local copy of it is not what the task follows.
 pub mod conflict;
 pub mod conflict_log;
 pub mod merge_only;
 pub mod probe;
 pub use conflict::{conflict_back, conflict_failure, conflict_message};
 pub use merge_only::merge_only;
-use crate::flow::git::{has_origin, head_of};
+use crate::flow::git::{checked_out, has_origin, head_of};
 use crate::json::*;
 use crate::store::fetch;
 use crate::store::repos::{branch_of, folder_of, git_out};
@@ -66,6 +68,7 @@ pub fn known_target(t: &Obj, cache: &mut HashMap<String, String>) -> String {
     let key = format!("{}|{}", root.display(), t.s("from"));
     if let Some(v) = cache.get(&key) { return v.clone(); }
     let sha = if via_remote(&root, t) { git_out(&root, &["rev-parse", "--verify", &format!("refs/remotes/origin/{}", main_branch(&root, t))]).unwrap_or_default() }
+        else if has_origin(&root) { let on = branch_of(&root); let x = git_out(&root, &["rev-parse", "--verify", "-q", &format!("refs/remotes/origin/{on}")]).unwrap_or_default(); if x.is_empty() { String::new() } else { format!("{x} {on}") } }
         else { let h = head_of(&root); let h = if h.is_empty() { git_out(&root, &["rev-parse", "HEAD"]).unwrap_or_default() } else { h }; if h.is_empty() { String::new() } else { format!("{h} {}", branch_of(&root)) } };
     cache.insert(key, sha.clone());
     sha
@@ -93,6 +96,19 @@ fn remote_main(root: &Path, t: &Obj, tree: &Path) -> Result<(String, String), St
         (Ok(()), Err(e)) => Err(format!("origin/{b} could not be read after the fetch.\n\nWhat git said:\n{}", e.msg)),
     }
 }
+/// Where the branch your checkout is on stands at origin, asked now: fetched, then read (never FETCH_HEAD, which a
+/// fetch shared with another task does not write). A fetch that lost a race for the ref to another one takes what
+/// that one wrote; any other failure says why in plain words, then what git said.
+fn remote_checkout(tree: &Path, b: &str) -> Result<String, String> {
+    let fetched = fetch_main(tree, b);
+    let known = git_out(tree, &["rev-parse", "--verify", "-q", &format!("refs/remotes/origin/{b}^{{commit}}")]);
+    match (fetched, known) {
+        (Ok(()), Ok(x)) => Ok(x),
+        (Err(e), Ok(x)) if fetch::moved(&e.msg) => Ok(x),
+        (Err(e), _) => Err(e.msg),
+        (Ok(()), Err(e)) => Err(format!("origin/{b} could not be read after the fetch.\n\nWhat git said:\n{}", e.msg)),
+    }
+}
 /// What a sync found: current, merged, conflict, skip or error (and clean, for a test merge), with what it looked at.
 #[derive(Clone, Debug, Default)]
 pub struct Synced { pub status: &'static str, pub target: String, pub seen: String, pub base: String, pub onto: Option<String>, pub adopt: bool, pub head: String, pub before: String, pub overlap: Option<Vec<String>>, pub files: String, pub restored: bool, pub out: String, pub want: String, pub detail: String }
@@ -110,7 +126,24 @@ fn look(t: &Task, tree: &str, test: bool) -> Synced {
         let b;
         (target, b) = match remote_main(&root, t, tree) { Ok(x) => x, Err(detail) => return Synced { status: "error", detail, ..Default::default() } };
         base = format!("origin/{b}"); onto = None; adopt = false;
+    } else if has_origin(&root) {
+        // Pull requests off and no branch named: the work lands on the branch your checkout is on, pushed there at
+        // origin (land/direct.rs). Its copy at the remote is the main the task keeps up with; your own local branch,
+        // and anything unsaved in your checkout, are never read for it.
+        let on = branch_of(&root);
+        if checked_out(&root).is_empty() {
+            return Synced { status: "error", want: if t.s("syncBranch").is_empty() { on } else { t.t("syncBranch") }, detail: "your checkout is on no branch (a detached HEAD), so there is no branch for the work to land on at origin: switch it to the branch the work belongs to, then finish again".into(), ..Default::default() };
+        }
+        let mut ad = false;
+        if t.b("syncBranch") && on != t.s("syncBranch") {
+            let gone = git_out(&root, &["rev-parse", "--verify", "-q", &format!("refs/heads/{}", t.s("syncBranch"))]).is_err();
+            if !gone { return Synced { status: "skip", onto: Some(on), want: t.t("syncBranch"), ..Default::default() }; }
+            ad = true;
+        }
+        target = match remote_checkout(tree, &on) { Ok(x) => x, Err(detail) => return Synced { status: "error", detail, want: on, ..Default::default() } };
+        base = format!("origin/{on}"); onto = Some(on); adopt = ad;
     } else {
+        // No origin at all: there is nowhere to push, and the branch your checkout is on is the only main there is.
         let on = branch_of(&root);
         let mut ad = false;
         if t.b("syncBranch") && on != t.s("syncBranch") {

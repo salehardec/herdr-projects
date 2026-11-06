@@ -97,6 +97,8 @@ fn head_file(dir: &Path) -> String {
     read_text(&common.join(r)).map(|s| s.trim().to_string()).filter(|s| is_sha(s)).unwrap_or_default()
 }
 pub fn head_of(dir: &Path) -> String { let k = head_file(dir); if !k.is_empty() { k } else { git_out(dir, &["rev-parse", "HEAD"]).unwrap_or_default() } }
+/// The branch a checkout is on, by its name: empty when it is on none (a detached HEAD, or no git there).
+pub fn checked_out(dir: &Path) -> String { git_out(dir, &["symbolic-ref", "--short", "HEAD"]).unwrap_or_default() }
 pub fn dirty(dir: &Path) -> String { git_out(dir, &["status", "--porcelain"]).unwrap_or_default() }
 /// The board's own comments on a pull request are posted as the logged-in user: each ends with this mark.
 pub const BOARD_COMMENT: &str = "\n\n<!-- herdr-projects -->";

@@ -1,6 +1,8 @@
 //! The merge itself, with the task in stage "merging": the last catch-up with main, then through the pull request (at
-//! the reviewed commit only), by a push to the branch it started from by name (direct.rs), or locally into the branch
-//! your checkout is on, squashed by default.
+//! the reviewed commit only), by a push of what was reviewed to a branch at origin (direct.rs) — the branch the task
+//! started from by name, or the branch your checkout is on — or, where there is no origin to push to, locally into the
+//! branch your checkout is on, squashed by default. A remote is never stale and a checkout is never written into when
+//! there is one: the push is asked back of origin (`git ls-remote`), and only what it shows is reported as merged.
 use super::cleanup::tidy;
 use crate::clock::now;
 use crate::err::Res;
@@ -112,10 +114,13 @@ pub fn land_core(id: &str, g: &mut Guard) -> Res<()> {
     // Started from a named branch (origin's main too) with no pull request: pushed there at origin (direct.rs), your
     // checkout untouched.
     let direct = sync::pushed_to(&root, &t).filter(|_| !tree.is_empty());
+    // No remote at all: there is nowhere to push the work to, so a task with no pull request and no branch named is
+    // merged into your checkout itself, and that checkout must be clean for it (the one way the board writes there).
+    let nowhere = !flow::git::has_origin(&root);
     if !tree.is_empty() {
         let tp = Path::new(&tree);
         let pre = (|| -> Res<Option<&'static str>> {
-            if !t.b("pr") && direct.is_none() && !flow::git::dirty(&root).is_empty() { fail(g, "Merge needs a clean checkout", &format!("Checkout: {}\n{}", root.display(), flow::git::dirty(&root)), "Commit, stash or move your own unsaved files, then approve again. The agent must not alter your checkout.", no_fix())?; return Ok(Some("done")); }
+            if nowhere && !t.b("pr") && direct.is_none() && !flow::git::dirty(&root).is_empty() { fail(g, "Merge needs a clean checkout", &format!("Checkout: {}\n{}", root.display(), flow::git::dirty(&root)), "Commit, stash or move your own unsaved files, then approve again. The agent must not alter your checkout.", no_fix())?; return Ok(Some("done")); }
             if git_out(tp, &["symbolic-ref", "--short", "HEAD"])? != t.s("branch") { fail(g, "Task is on the wrong branch", &tree, "Restore the task's own branch before retrying.", no_fix())?; return Ok(Some("done")); }
             // Approve refuses unless the worktree is clean and its HEAD is exactly the commit that was checked and reviewed.
             let vh = t.at("mergeIntent").t("verifiedHead");
@@ -148,6 +153,17 @@ pub fn land_core(id: &str, g: &mut Guard) -> Res<()> {
     }
     t = g.check()?;
     if let Some(b) = &direct { return super::direct::land(id, g, &t, &tree, b, &how); }
+    // No pull request and no branch named, and a remote to push to: the work lands on the branch your checkout is on,
+    // pushed there at origin from the task's own worktree (direct.rs). Your checkout is only read for that branch's
+    // name: never merged into, never fetched into, never switched — what is unsaved or checked out there does not
+    // matter, and its own copy of the branch stays as behind as it was until you pull it yourself.
+    if !t.b("pr") && !tree.is_empty() && !nowhere {
+        let b = flow::git::checked_out(&root);
+        if b.is_empty() {
+            return fail(g, "Your checkout is on no branch", &format!("Checkout: {}\n\nThis task lands on the branch your checkout is on, pushed to origin, and there is none: a detached HEAD.", root.display()), "Switch your checkout to the branch the work belongs to (or name one for the task with workspace.from develop), then approve again.", no_fix());
+        }
+        return super::direct::land(id, g, &t, &tree, &b, &how);
+    }
     if t.b("pr") {
         // By number, not link: gh then uses the repo's own remote for the host.
         let pr = pr_number(t.s("pr"));
@@ -204,7 +220,8 @@ pub fn land_core(id: &str, g: &mut Guard) -> Res<()> {
         let head = if reviewed.is_empty() { t.t("prHead") } else { reviewed.clone() };
         return landed(id, g, &t, &format!("Merged: {}", t.s("pr")), &head, &seen.at("mergeCommit").t("oid"));
     }
-    // No pull request: merge into the branch your checkout is on.
+    // No pull request: merge into the branch your checkout is on. Only with no origin at all — with one the work is
+    // pushed there instead (above), so that nothing is written into a checkout that is not the board's own.
     if tree.is_empty() { let m = if t.b("msg") && !t.s("msg").to_lowercase().starts_with("merging") { t.t("msg") } else { "Done".into() }; return landed(id, g, &t, &m, "", ""); }
     let local = (|| -> Res<Option<String>> {
         let mess = flow::git::dirty(&root);
