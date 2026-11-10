@@ -21,7 +21,9 @@ impl Bench {
             std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts").join(f), proj.join("scripts").join(f)).unwrap();
         }
         let b = Bench { base, others: vec![] };
-        b.stub("cargo", &format!("echo \"$* | ${{CARGO_BUILD_JOBS-unset}} | ${{RUSTC_WRAPPER:-none}}\" >> '{}'\nexit 7", b.saw_file().display()));
+        // It answers a version, as a real cargo does (the check asks one before it builds), and records every other call
+        // and stops the check there.
+        b.stub("cargo", &format!("[ \"$1\" = -V ] && {{ echo 'cargo 1.99.1'; exit 0; }}\necho \"$* | ${{CARGO_BUILD_JOBS-unset}} | ${{RUSTC_WRAPPER:-none}}\" >> '{}'\nexit 7", b.saw_file().display()));
         b.stub("rustc", "echo rustc 0.0.0");
         b.stub("getconf", "echo 3");
         b.git(&["init", "-q"]);

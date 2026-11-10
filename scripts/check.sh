@@ -33,10 +33,11 @@ while [ $# -gt 0 ]; do
 done
 [ "$again" = 0 ] || [ -z "$names" ] || quit "check takes names of tests or --since, not both."
 say() { [ -n "$HERDR_PROJECTS_PROGRESS" ] && printf '%s\n' "$1" > "$HERDR_PROJECTS_PROGRESS" || true; }
-if ! command -v cargo >/dev/null 2>&1; then
-  for d in "$HOME/.cargo/bin"; do [ ! -x "$d/cargo" ] || PATH="$d:$PATH"; done
-fi
-command -v cargo >/dev/null 2>&1 || quit "The check needs Rust (cargo): https://rustup.rs"
+# A cargo that really runs, not a version manager's shim with no version set (it is on PATH, and answers nothing): the
+# one PATH has is asked, and the usual install spot is tried when it cannot answer.
+cargo_runs() { cargo -V >/dev/null 2>&1; }
+cargo_runs || { for d in "$HOME/.cargo/bin"; do [ ! -x "$d/cargo" ] || PATH="$d:$PATH"; done; }
+cargo_runs || quit "The check needs a Rust toolchain whose cargo runs: https://rustup.rs"
 # Compiles through the build cache every worktree shares, when the workspace setup installed it, on its share of the
 # cores: counted among the checks running now from here until it ends (docs/testing.md).
 . scripts/build-cache.sh
