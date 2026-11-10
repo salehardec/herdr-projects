@@ -1,6 +1,7 @@
 //! Keeping tasks up to date with a remote's main: main moving there is noticed by the periodic fetch and the updated
-//! branch pushed; a fetch that fails is never a sync, and never fails finished work; with pull requests off, your
-//! local branch is the main. Under `merge.sync approve` a waiting task is only test-merged: no merge commit, no push.
+//! branch pushed; a fetch that fails is never a sync, and never fails finished work; with pull requests off, the task
+//! lands on a branch at origin (`merge.into`, else origin's own default branch), never on the branch your checkout is
+//! on. Under `merge.sync approve` a waiting task is only test-merged: no merge commit, no push.
 use crate::common;
 use common::*;
 use serde_json::json;
@@ -111,7 +112,7 @@ fn a_fetch_that_fails_is_not_a_sync_a_finished_turn_is_held_and_a_waiting_task_i
 }
 
 #[test]
-fn with_a_remote_but_pull_requests_off_the_branch_your_checkout_is_on_is_where_work_lands_at_origin() {
+fn with_a_remote_but_pull_requests_off_the_work_lands_on_origins_default_branch_never_your_checkouts() {
     let w = world_with(Opts { repo: true, origin: true, settings: json!({ "review.when": "never", "merge.pr": false }), ..Default::default() });
     let start = |title: &str, file: &str| { w.script(json!({ "worker": [{ "files": { "a.txt": file }, "commit": title, "note": format!("Did {title}.") }] })); let id = w.add(title); delegate(&id); assert_eq!(settle(&id).s("stage"), "approval"); id };
     let first = start("first", "first\n");
@@ -122,7 +123,7 @@ fn with_a_remote_but_pull_requests_off_the_branch_your_checkout_is_on_is_where_w
     let mine = git(&w.root, &["rev-parse", "HEAD"]);
     finish_line::approve(&first, None, false).unwrap();
     let t = settle(&first);
-    assert_eq!((t.s("stage"), t.s("msg")), ("done", "Merged into main at origin."), "{}", t.at("failure"));
+    assert_eq!((t.s("stage"), t.s("msg")), ("done", "Merged into main at origin (from origin/HEAD)."), "{}", t.at("failure"));
     let landed = git(&w.root, &["rev-parse", "origin/main"]);
     assert_eq!(t.s("mergeCommit"), landed);
     assert_ne!(landed, mine, "landed at the remote, not in your checkout");

@@ -1,9 +1,9 @@
-//! Landing on a branch at the remote with no pull request (`workspace.from develop`, or no branch named at all: then
-//! the branch your checkout is on, `merge.pr` off): a commit built from the reviewed one, as `merge.method` says,
-//! pushed to that branch at origin. No checkout is touched and nothing is forced: a branch that moved meanwhile is
-//! caught up with and checked again, under the same approval. The remote is asked after the push, and only what it says
-//! is reported as merged (`git ls-remote`): a push git said went, but origin does not show, is a failed merge and the
-//! work stays where it is.
+//! Landing on a branch at the remote with no pull request: the branch named by the task's start (`workspace.from
+//! develop`), `merge.into`, or origin's own default branch — never the branch your checkout is on. A commit built from
+//! the reviewed one, as `merge.method` says, pushed to that branch at origin, and the message says which of them named
+//! it. No checkout is touched and nothing is forced: a branch that moved meanwhile is caught up with and checked again,
+//! under the same approval. The remote is asked after the push, and only what it says is reported as merged (`git
+//! ls-remote`): a push git said went, but origin does not show, is a failed merge and the work stays where it is.
 use super::merge::{fail, landed, reverify, Fail};
 use crate::err::Res;
 use crate::finish::auto_merge::called_off;
@@ -39,10 +39,13 @@ fn build(tp: &Path, how: &str, parent: &str, head: &str, message: &str) -> Res<S
     if git_out(tp, &["rev-parse", &tree])? == git_out(tp, &["rev-parse", &format!("{parent}^{{tree}}")])? { return Ok(parent.into()); }
     git_out(tp, &["commit-tree", &tree, "-p", parent, "-m", message])
 }
-/// Runs once `sync::sync_main` found the task's worktree up to date with `origin/<b>` — the branch the work lands on:
-/// one the task started from by name, or, with none named and `merge.pr` off, the branch your checkout is on.
-pub fn land(id: &str, g: &mut Guard, t: &Task, tree: &str, b: &str, how: &str) -> Res<()> {
+/// Runs once `sync::sync_main` found the task's worktree up to date with `origin/<b>` — the branch the work lands on
+/// (`from`: what named it, `workspace.from`, `merge.into` or `origin/HEAD`, said in the merge's message and kept on the
+/// task).
+pub fn land(id: &str, g: &mut Guard, t: &Task, tree: &str, b: &str, how: &str, from: &str) -> Res<()> {
     let tp = Path::new(tree);
+    // Where the target came from, on the task itself: a merge that landed somewhere unexpected says why at once.
+    g.set(|t| { t.put("mergeInto", b); t.put("mergeIntoFrom", from); })?;
     // Only the commit that was checked and reviewed lands.
     let head = { let v = t.at("mergeIntent").t("verifiedHead"); if v.is_empty() { flow::git::head_of(tp) } else { v } };
     let parent = match at_origin(tp, b) {
@@ -65,7 +68,7 @@ pub fn land(id: &str, g: &mut Guard, t: &Task, tree: &str, b: &str, how: &str) -
             // git's word is not the remote's: origin is asked which commit it now calls `b`, and only that one is
             // reported as merged. What it does not show leaves the work where it is, failed and kept.
             let seen = match at_remote(tp, b, most) {
-                Ok(sha) if sha == new => return landed(id, g, t, &format!("Merged into {b} at origin."), &head, &new),
+                Ok(sha) if sha == new => return landed(id, g, t, &format!("Merged into {b} at origin (from {from})."), &head, &new),
                 Ok(sha) => format!("origin/{b} is {}", if sha.is_empty() { "not there".to_string() } else { sha }),
                 Err(e) => format!("origin could not be asked: {e}"),
             };

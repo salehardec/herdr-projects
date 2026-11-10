@@ -8,9 +8,9 @@ use crate::json::*;
 pub const WORDS: [&str; 2] = ["main", "here"];
 fn refuse<T>(msg: String) -> Res<T> { Err(Error::refused(msg)) }
 /// A branch named by its name alone: `origin/develop` and `refs/heads/develop` are `develop`.
-fn bare(w: &str) -> &str { w.strip_prefix("refs/heads/").or_else(|| w.strip_prefix("refs/remotes/origin/")).or_else(|| w.strip_prefix("origin/")).unwrap_or(w) }
+pub(super) fn bare(w: &str) -> &str { w.strip_prefix("refs/heads/").or_else(|| w.strip_prefix("refs/remotes/origin/")).or_else(|| w.strip_prefix("origin/")).unwrap_or(w) }
 /// The nearest name git takes: what it refuses turned into `-`, dots and slashes doubled or at the ends taken off.
-fn mended(w: &str) -> String {
+pub(super) fn mended(w: &str) -> String {
     let s: String = bare(w).chars().map(|c| if c.is_whitespace() || c.is_control() || "~^:?*[\\".contains(c) { '-' } else { c }).collect();
     let s = crate::re!(r"-{2,}").replace_all(&s, "-").into_owned();
     let s = crate::re!(r"\.{2,}").replace_all(&s, ".").into_owned();

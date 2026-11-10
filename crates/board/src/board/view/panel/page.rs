@@ -32,6 +32,7 @@ pub fn value_words(row: &Obj) -> String {
         Ty::Text => "text; none for none".into(),
         Ty::Branch => "a branch name with {n}, {slug} or {key} in it, such as work/{n}-{slug}".into(),
         Ty::From => "main, here, or the name of a branch at the remote, such as develop".into(),
+        Ty::Into => "the name of a branch at origin, such as develop; none for origin's default branch".into(),
         Ty::List => "names, with commas between them; none for none".into(),
         Ty::Issues => "issue numbers of the task's own repo, with commas between them, such as 2203, 2204; none for none".into(),
         Ty::Attempts => format!("a count from 1 to 5, or programs with commas between them ({PROGRAMS}), each with a model after a slash if you like"),

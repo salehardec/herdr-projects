@@ -79,6 +79,14 @@ pub fn pipeline(id: &str, g: &mut Guard, text: &str, keep_intent: bool, reason: 
         }
         let r = sync::sync_main(&t, &tree);
         if r.status == "conflict" { sync::conflict_back(id, g, &tree, &r, &mut |g, failure, seen| { let _ = fail(g, failure, FailHow { keep_intent: true, patch: seen }); }); return Ok(()); }
+        // Nothing names where the work lands (no `merge.into`, no branch its start named, and origin's default branch
+        // is not known): that is not worked around or guessed. The task fails and says what to set.
+        if r.status == "no-target" {
+            let (title, detail, next) = sync::target::nowhere(&r.detail, &t);
+            let mut f = failure("merge", &title, &detail, &next); f.put("agentCanFix", false); f.put("auth", false);
+            fail(g, f, FailHow::default())?;
+            return Ok(());
+        }
         // Main could not be read (status "error"): the finished work is not failed for it. It is checked and reviewed,
         // then waits as "behind main", never approvable, while the board tries the sync again by itself (sync_job.rs).
         own_sync = Some(r);
@@ -193,8 +201,8 @@ pub fn pipeline(id: &str, g: &mut Guard, text: &str, keep_intent: bool, reason: 
             if url.is_empty() {
                 // The issues whose `Closes #N` lines the board writes on it (`merge.closes`, land/closes.rs).
                 let mut on_pr: Vec<u64> = vec![];
-                // It merges into the branch the task keeps up with: the one it started from at the remote.
-                let onto = t.s("from").starts_with("origin/").then(|| sync::main_branch(&root, &t));
+                // It merges into the branch the task keeps up with (sync/target.rs): never the branch your checkout is on.
+                let onto = Some(sync::main_branch(&root, &t)).filter(|b| !b.is_empty());
                 let named = sync::named_base(&root, &t).is_some();
                 // Started from a named branch, the agent's own pull request is looked for first: GitHub would take a
                 // second one of the branch into another base.

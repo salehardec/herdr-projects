@@ -29,6 +29,14 @@ pub fn sync_job(id: &str, force: bool) {
         else if !flow::git::dirty(tp).is_empty() { why = "its worktree has unsaved files".into(); }
         else if t.b("reviewedHead") && flow::git::head_of(tp) != t.s("reviewedHead") { why = "its branch changed after the review".into(); }
         else { r = Some(sync::sync_main(&t, &tree)); }
+        // Nothing names where the work lands: the task fails and says what to set, rather than waiting for a main that
+        // cannot be named (sync/target.rs).
+        if let Some(x) = r.as_ref().filter(|x| x.status == "no-target") {
+            let (title, detail, next) = sync::target::nowhere(&x.detail, &t);
+            let mut f = failure("merge", &title, &detail, &next); f.put("agentCanFix", false); f.put("auth", false);
+            fail(&mut g, f, FailHow::default())?;
+            return Ok(());
+        }
         if let Some(x) = &r { why = sync::held_why(x); }
         if !why.is_empty() {
             let b = g.set(|t| { let rerun = t.at("syncBlocked").b("rerun"); let p = sync::seen_patch(t, None); sync::apply(t, p); let mut v = sync::blocked(&why, r.as_ref()); if rerun { v["rerun"] = json!(true); } t.put("syncBlocked", v); t.put("msg", sync::behind_msg(&why)); })?;

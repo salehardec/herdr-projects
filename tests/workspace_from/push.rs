@@ -52,7 +52,7 @@ fn it_starts_from_the_branch_lands_there_by_a_push_and_the_next_task_builds_on_i
     let t = approved(&id);
     assert_eq!(t.s("stage"), "done", "{}", t.at("failure"));
     let landed = origin(&w, "develop");
-    assert_eq!((t.s("mergeCommit"), t.s("msg")), (landed.as_str(), "Merged into develop at origin."));
+    assert_eq!((t.s("mergeCommit"), t.s("msg")), (landed.as_str(), "Merged into develop at origin (from workspace.from)."));
     assert_eq!(git(&bare(&w), &["rev-parse", "develop^"]), d1, "squashed onto develop: one commit");
     assert_eq!(has(&w, "develop", "f.txt").as_deref(), Some("f.txt"));
     assert!(git(&bare(&w), &["log", "-1", "--format=%B", "develop"]).starts_with("On develop\n\nTask: "));
@@ -111,7 +111,7 @@ fn a_named_branch_that_is_origins_main_lands_there_too_never_in_your_checkout() 
     assert_eq!((t.s("from"), t.s("baseSha")), ("origin/develop", d1.as_str()));
     assert_eq!(sw::sync::lands_on(&t), "develop");
     let t = approved(&id);
-    assert_eq!((t.s("stage"), t.s("msg")), ("done", "Merged into develop at origin."), "{}", t.at("failure"));
+    assert_eq!((t.s("stage"), t.s("msg")), ("done", "Merged into develop at origin (from workspace.from)."), "{}", t.at("failure"));
     assert_eq!(git(&bare(&w), &["rev-parse", "develop^"]), d1); assert!(has(&w, "develop", "f.txt").is_some());
     assert_eq!((git(&w.root, &["symbolic-ref", "--short", "HEAD"]), git(&w.root, &["rev-parse", "HEAD"])), ("main".into(), mine), "your checkout is untouched");
     assert!(!w.root.join("f.txt").exists() && git(&w.root, &["status", "--porcelain"]).is_empty());
