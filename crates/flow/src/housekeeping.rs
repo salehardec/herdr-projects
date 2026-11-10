@@ -15,8 +15,8 @@ use crate::flow::{git::has_origin, send::resume_cut, spaces::{sweep_closing, swe
 use crate::herdr::{cli::{same_socket, socket_exists}, Herdr};
 use crate::json::*;
 use crate::runner::{inline, runner_alive, spawn_claimed, spawn_runner, start_reaped, user_env, detach, JOBS};
-use crate::store::{files::{bin, data_dir, has_tasks, RUNNER_STAGES}, marks::due, old_suggestions::save_old_suggestions, repos::{branch_of, folder_of}, retries::waiting_of, settings::lookup::setting, tasks::{get, list, ListOpts, Task}};
-use crate::sync::{fetch_main, known_target, main_branch, resyncable, tree_of, via_remote};
+use crate::store::{files::{bin, data_dir, has_tasks, RUNNER_STAGES}, marks::due, old_suggestions::save_old_suggestions, repos::folder_of, retries::waiting_of, settings::lookup::setting, tasks::{get, list, ListOpts, Task}};
+use crate::sync::{fetch_main, known_target, main_branch, resyncable, tree_of};
 use std::collections::HashMap;
 
 fn key(s: &str) -> String { sha1_smol::Sha1::from(s).digest().to_string()[..8].to_string() }
@@ -97,16 +97,16 @@ fn resync(tasks: &[Task], socket: &str) {
 /// Ask the remote where main is, for every repo with a task waiting: main also moves without the board (a merge on
 /// GitHub, your own push). A fetch that fails says nothing about main, so nothing may go on looking ready: each waiting
 /// task of that repo gets a sync runner anyway, which finds the same failure and holds it "behind main".
-/// Main is the remote's main branch, or — for a task with no pull request and no branch named — `origin`'s copy of the
-/// branch your checkout is on (land/merge.rs): it moved there, not here, so it is fetched here too.
+/// Main is the branch the task lands on (sync/target.rs): the one it started from by name, `merge.into`, or origin's
+/// own default branch. Nothing names it: a sync runner says so and the task fails.
 pub fn fetch_mains() {
     let mut done: HashMap<String, bool> = HashMap::new();
     for t in list(ListOpts::default()) {
         if !resyncable(&t) || tree_of(&t).is_empty() || runner_alive(&t) { continue; }
         let root = folder_of(t.s("id"));
-        let b = if via_remote(&root, &t) { main_branch(&root, &t) }
-            else if has_origin(&root) { let on = branch_of(&root); if on.is_empty() { continue; } on }
-            else { continue };
+        if !has_origin(&root) { continue; }
+        let b = main_branch(&root, &t);
+        if b.is_empty() { spawn_claimed("sync", t.s("id"), &["--force"]); continue; }
         let k = format!("{}|{b}", root.display());
         let ok = *done.entry(k).or_insert_with(|| fetch_main(&root, &b).is_ok());
         if !ok && !t.b("syncBlocked") { spawn_claimed("sync", t.s("id"), &["--force"]); }

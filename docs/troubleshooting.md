@@ -167,7 +167,7 @@ The panel (`Alt+P`) says why in plain words under **Behind main**, and what git 
 | origin asked for a login | make `git fetch origin` work in your checkout without a prompt: an SSH key loaded in the agent, or a credential helper. The board never types a password |
 | origin did not answer within 60 seconds | the same, if it waits for a password or a passphrase; otherwise a slow or busy remote, and the next try may pass |
 | origin could not be reached | the network or the server: nothing to do, the board tries again |
-| origin has no branch … | the remote's main branch has another name, or the branch the task started from (`workspace.from`) is gone: `git fetch origin`, then `git remote set-head origin --auto` in your checkout, or push that branch again |
+| origin has no branch … | the remote's main branch has another name, or the branch named by `merge.into` or by the task's start (`workspace.from`) is gone: set `merge.into` to a branch origin has, `git fetch origin` and `git remote set-head origin --auto`, or push that branch again |
 | git's lock file … stayed in the way | another git command was writing the same ref the whole time, or one that stopped left its `.lock` file behind: if no git command runs in that repo, delete the file it names |
 | origin is not a repository the board can read | `git remote -v` shows where origin points |
 
@@ -176,7 +176,9 @@ of a repo writes the same `origin/main`), so the board fetches it for one task a
 another's fetch takes that one's result. A fetch that git refused because another program fetched at that very moment
 (an agent's own `git fetch`, yours, an editor's) is tried again after 2 and 4 seconds, and a copy that program just
 fetched counts. A remote whose main is not called `main` and was never named in your clone (no `origin/HEAD`, as after
-`git remote add`) is asked which branch it is, and that branch is fetched, once.
+`git remote add`) is asked which branch it is, and that branch is fetched, once. When origin cannot say which branch is
+its own and no `merge.into` names one, the board does not guess: the task fails with **Nothing says where this work
+lands** and says what to set ([the message](how-work-gets-done.md#approving-and-merging)).
 
 ## Where the logs are
 

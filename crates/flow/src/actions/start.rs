@@ -39,6 +39,8 @@ const FRESH: &[&str] = &[
     "reviewedHead",
     "syncedTo",
     "syncSeen",
+    "mergeInto",
+    "mergeIntoFrom",
     "syncBranch",
     "syncRepairs",
     "conflict",

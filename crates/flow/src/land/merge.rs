@@ -1,8 +1,9 @@
 //! The merge itself, with the task in stage "merging": the last catch-up with main, then through the pull request (at
 //! the reviewed commit only), by a push of what was reviewed to a branch at origin (direct.rs) — the branch the task
-//! started from by name, or the branch your checkout is on — or, where there is no origin to push to, locally into the
-//! branch your checkout is on, squashed by default. A remote is never stale and a checkout is never written into when
-//! there is one: the push is asked back of origin (`git ls-remote`), and only what it shows is reported as merged.
+//! started from by name, `merge.into`, or origin's own default branch, never the branch your checkout is on — or, where
+//! there is no origin to push to, locally into the branch your checkout is on, squashed by default. A remote is never
+//! stale and a checkout is never written into when there is one: the push is asked back of origin (`git ls-remote`),
+//! and only what it shows is reported as merged. Nothing names a landing branch: the task fails and says what to set.
 use super::cleanup::tidy;
 use crate::clock::now;
 use crate::err::Res;
@@ -111,16 +112,22 @@ pub fn land_core(id: &str, g: &mut Guard) -> Res<()> {
     let tree = sync::tree_of(&t);
     let how = setting_text("merge.method", Some(&t)); // read right before the merge. squash by default
     if let Some(b) = sync::named_base(&root, &t) { if !onto_named(g, &t, &root, &b)? { return Ok(()); } }
-    // Started from a named branch (origin's main too) with no pull request: pushed there at origin (direct.rs), your
-    // checkout untouched.
-    let direct = sync::pushed_to(&root, &t).filter(|_| !tree.is_empty());
     // No remote at all: there is nowhere to push the work to, so a task with no pull request and no branch named is
     // merged into your checkout itself, and that checkout must be clean for it (the one way the board writes there).
     let nowhere = !flow::git::has_origin(&root);
+    // A task with no pull request and a remote lands at origin on the branch it lands on (sync/target.rs): one its start
+    // named, `merge.into`, or origin's own default branch — never the branch your checkout is on. Nothing names one:
+    // the task fails and says what to set, and nothing is pushed.
+    let target = if t.b("pr") || tree.is_empty() || nowhere { None } else {
+        match sync::target::of(&root, &t) {
+            Ok(x) => Some(x),
+            Err(detail) => { let (title, detail, next) = sync::target::nowhere(&detail, &t); fail(g, &title, &detail, &next, no_fix())?; return Ok(()); }
+        }
+    };
     if !tree.is_empty() {
         let tp = Path::new(&tree);
         let pre = (|| -> Res<Option<&'static str>> {
-            if nowhere && !t.b("pr") && direct.is_none() && !flow::git::dirty(&root).is_empty() { fail(g, "Merge needs a clean checkout", &format!("Checkout: {}\n{}", root.display(), flow::git::dirty(&root)), "Commit, stash or move your own unsaved files, then approve again. The agent must not alter your checkout.", no_fix())?; return Ok(Some("done")); }
+            if nowhere && !t.b("pr") && target.is_none() && !flow::git::dirty(&root).is_empty() { fail(g, "Merge needs a clean checkout", &format!("Checkout: {}\n{}", root.display(), flow::git::dirty(&root)), "Commit, stash or move your own unsaved files, then approve again. The agent must not alter your checkout.", no_fix())?; return Ok(Some("done")); }
             if git_out(tp, &["symbolic-ref", "--short", "HEAD"])? != t.s("branch") { fail(g, "Task is on the wrong branch", &tree, "Restore the task's own branch before retrying.", no_fix())?; return Ok(Some("done")); }
             // Approve refuses unless the worktree is clean and its HEAD is exactly the commit that was checked and reviewed.
             let vh = t.at("mergeIntent").t("verifiedHead");
@@ -139,6 +146,7 @@ pub fn land_core(id: &str, g: &mut Guard) -> Res<()> {
         let r = sync::sync_main(&t, &tree);
         match r.status {
             "skip" => return fail(g, "Your checkout is on another branch", &format!("Checkout: {}\nIt is on: {}\nThis task lands on: {}\n\nNothing was merged.", root.display(), r.onto.as_deref().filter(|s| !s.is_empty()).unwrap_or("no branch"), r.want), &format!("Switch your checkout back to {}, then approve again.", r.want), no_fix()),
+            "no-target" => { let (title, detail, next) = sync::target::nowhere(&r.detail, &t); return fail(g, &title, &detail, &next, no_fix()); }
             "error" => return behind(g, &r),
             "conflict" => {
                 sync::conflict_back(id, g, &tree, &r, &mut |g, failure, seen| {
@@ -152,18 +160,10 @@ pub fn land_core(id: &str, g: &mut Guard) -> Res<()> {
         }
     }
     t = g.check()?;
-    if let Some(b) = &direct { return super::direct::land(id, g, &t, &tree, b, &how); }
-    // No pull request and no branch named, and a remote to push to: the work lands on the branch your checkout is on,
-    // pushed there at origin from the task's own worktree (direct.rs). Your checkout is only read for that branch's
-    // name: never merged into, never fetched into, never switched — what is unsaved or checked out there does not
-    // matter, and its own copy of the branch stays as behind as it was until you pull it yourself.
-    if !t.b("pr") && !tree.is_empty() && !nowhere {
-        let b = flow::git::checked_out(&root);
-        if b.is_empty() {
-            return fail(g, "Your checkout is on no branch", &format!("Checkout: {}\n\nThis task lands on the branch your checkout is on, pushed to origin, and there is none: a detached HEAD.", root.display()), "Switch your checkout to the branch the work belongs to (or name one for the task with workspace.from develop), then approve again.", no_fix());
-        }
-        return super::direct::land(id, g, &t, &tree, &b, &how);
-    }
+    // No pull request, and a remote: pushed to the branch it lands on from the task's own worktree (direct.rs). Your
+    // checkout is not read for it at all: never for a branch's name, never fetched into, never merged into, never
+    // switched — what is unsaved or checked out there does not matter.
+    if let Some(tg) = &target { return super::direct::land(id, g, &t, &tree, &tg.branch, &how, &tg.from); }
     if t.b("pr") {
         // By number, not link: gh then uses the repo's own remote for the host.
         let pr = pr_number(t.s("pr"));

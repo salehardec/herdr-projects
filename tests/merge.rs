@@ -1,9 +1,10 @@
-//! Merging an approved task with no pull request. In a repo with a remote, the branch your checkout is on is where the
-//! work lands, pushed there from the task's own worktree — never merged into your checkout, whatever is unsaved or
-//! checked out there, and never on your stale local copy of that branch. Only what origin shows after the push is
-//! reported as merged: a push origin refuses, and one git said went but origin does not show, fail the task and keep its
-//! worktree. With no remote at all the work is merged into your checkout, squashed as it always was, and unsaved files
-//! there stop it and nothing is forced.
+//! Merging an approved task with no pull request. In a repo with a remote, the work lands on the branch `merge.into`
+//! names, else origin's own default branch — never on the branch your checkout is on — pushed there from the task's own
+//! worktree and never merged into your checkout, whatever is unsaved or checked out there. Only what origin shows after
+//! the push is reported as merged: a push origin refuses, and one git said went but origin does not show, fail the task
+//! and keep its worktree. Nothing naming a landing branch fails the task with what to set, and pushes nothing. With no
+//! remote at all the work is merged into your checkout, squashed as it always was, and unsaved files there stop it and
+//! nothing is forced.
 use crate::common;
 use common::*;
 use serde_json::json;
@@ -85,7 +86,8 @@ fn the_work_is_pushed_to_origin_and_your_checkout_is_left_as_it_was_even_with_un
     let id = to_approval(&w, "Work");
     let tree = PathBuf::from(task(&id).t("worktree"));
     let t = approved(&id);
-    assert_eq!((t.s("stage"), t.s("msg")), ("done", "Merged into main at origin."), "{}", t.at("failure"));
+    assert_eq!((t.s("stage"), t.s("msg")), ("done", "Merged into main at origin (from origin/HEAD)."), "{}", t.at("failure"));
+    assert_eq!((t.s("mergeInto"), t.s("mergeIntoFrom")), ("main", "origin/HEAD"), "where the target came from is on the task");
     let landed = origin(&w, "main");
     assert_eq!(t.s("mergeCommit"), landed, "the commit reported is the one origin shows");
     assert_ne!(landed, before);
@@ -159,18 +161,60 @@ fn a_local_branch_that_is_behind_origin_is_not_the_base_the_work_lands_on() {
 }
 
 #[test]
-fn a_checkout_on_no_branch_says_so_and_merges_nothing() {
+fn a_checkout_on_another_branch_does_not_decide_where_the_work_lands() {
     let w = push_world(json!({}));
     let before = origin(&w, "main");
-    git(&w.root, &["checkout", "-q", "--detach"]);
-    // work finished while your checkout is on no branch: it is held as behind main, saying why, and nothing is approved
-    w.script(json!({ "worker": [{ "files": { "f.txt": "v1\n" }, "commit": "v1", "note": "Did v1." }] }));
-    let id = w.add("No branch");
-    delegate(&id);
-    let t = settle(&id);
-    assert_eq!(t.s("stage"), "approval");
-    assert!(t.s("msg").contains("your checkout is on no branch"), "{}", t.s("msg"));
-    assert!(finish_line::approve(&id, None, false).unwrap_err().msg.contains("cannot be approved yet"));
-    assert_eq!(origin(&w, "main"), before);
-    assert!(Path::new(&t.s("worktree")).exists());
+    // your checkout is on a feature branch of your own: that is never the branch the task lands on
+    git(&w.root, &["checkout", "-q", "-b", "feature/x"]);
+    let id = to_approval(&w, "On a feature branch");
+    assert_eq!(sw::sync::lands_on(&task(&id)), "main", "the question before the merge says where it goes");
+    let t = approved(&id);
+    assert_eq!((t.s("stage"), t.s("msg")), ("done", "Merged into main at origin (from origin/HEAD)."), "{}", t.at("failure"));
+    assert_eq!((t.s("mergeInto"), t.s("mergeIntoFrom")), ("main", "origin/HEAD"));
+    let landed = origin(&w, "main");
+    assert_eq!(t.s("mergeCommit"), landed); assert_ne!(landed, before);
+    assert_eq!(has(&w, "main", "f.txt").as_deref(), Some("v1"), "the work landed on origin's main");
+    assert_eq!(git(&w.root, &["symbolic-ref", "--short", "HEAD"]), "feature/x", "your checkout stays where it was");
+    assert!(common::worktrees::git(&bare(&w), &["rev-parse", "--verify", "-q", "refs/heads/feature/x"]).is_err(), "nothing was pushed to your own branch");
+}
+
+#[test]
+fn merge_into_names_the_branch_and_overrides_origins_default_branch() {
+    let w = push_world(json!({ "merge.into": "develop" }));
+    // the branch it names is at origin, and your checkout is somewhere else entirely
+    git(&w.root, &["push", "-q", "origin", "main:develop"]);
+    let (main, develop) = (origin(&w, "main"), git(&bare(&w), &["rev-parse", "develop"]));
+    git(&w.root, &["checkout", "-q", "-b", "feature/x"]);
+    let id = to_approval(&w, "Into develop");
+    assert_eq!(sw::sync::lands_on(&task(&id)), "develop");
+    let t = approved(&id);
+    assert_eq!((t.s("stage"), t.s("msg")), ("done", "Merged into develop at origin (from merge.into)."), "{}", t.at("failure"));
+    assert_eq!((t.s("mergeInto"), t.s("mergeIntoFrom")), ("develop", "merge.into"));
+    let landed = git(&bare(&w), &["rev-parse", "develop"]);
+    assert_ne!(landed, develop); assert_eq!(t.s("mergeCommit"), landed);
+    assert_eq!(git(&bare(&w), &["rev-parse", "develop^"]), develop, "one commit on top of develop");
+    assert_eq!(has(&w, "develop", "f.txt").as_deref(), Some("v1"));
+    assert_eq!(origin(&w, "main"), main, "origin's default branch is untouched");
+    assert_eq!(git(&w.root, &["symbolic-ref", "--short", "HEAD"]), "feature/x");
+}
+
+#[test]
+fn nothing_naming_the_landing_branch_fails_and_pushes_nothing() {
+    let w = push_world(json!({}));
+    let id = to_approval(&w, "Nowhere");
+    let before = origin(&w, "main");
+    // origin/HEAD is forgotten, and origin itself stops saying which branch is its own: the board does not guess
+    git(&w.root, &["remote", "set-head", "origin", "--delete"]);
+    git(&bare(&w), &["symbolic-ref", "HEAD", "refs/heads/gone"]);
+    assert_eq!(sw::sync::lands_on(&task(&id)), "no branch named");
+    let t = approved(&id);
+    // a failed merge waits for you again, saying why: nothing landed, and setting the branch makes the next yes work
+    assert_eq!((t.s("stage"), t.at("failure").s("title")), ("approval", "Nothing says where this work lands"), "{}", t.at("failure"));
+    assert!(t.b("mergeFailed") && !t.b("mergeIntent"), "{}", t.at("failure"));
+    assert!(t.at("failure").s("detail").contains("origin/HEAD"), "{}", t.at("failure"));
+    assert!(t.at("failure").s("next").contains("merge.into"), "{}", t.at("failure"));
+    assert_eq!(t.at("failure").at("agentCanFix"), &json!(false));
+    assert_eq!(origin(&w, "main"), before, "nothing was pushed");
+    assert!(t.t("mergeCommit").is_empty());
+    assert!(common::worktrees::git(&bare(&w), &["rev-parse", "--verify", "-q", &format!("refs/heads/{}", t.s("branch"))]).is_err(), "its own branch was not pushed either");
 }

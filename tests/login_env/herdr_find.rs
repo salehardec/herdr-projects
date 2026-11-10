@@ -20,7 +20,10 @@ fn herdr_in_local_bin_is_found_when_path_lacks_it_and_the_login_shell_is_not_ask
     let home = w.base.join("home");
     let found = program(&home.join(".local/bin"), "herdr", 0o755);
     let asked = std::cell::Cell::new(false);
-    assert_eq!(elsewhere("herdr", "/usr/bin:/bin", &spots(&home), || { asked.set(true); String::new() }), Some(found));
+    // A PATH that really lacks it: not this machine's own /usr/bin, which may have a herdr of its own.
+    let path = w.base.join("a-path-without-herdr");
+    std::fs::create_dir_all(&path).unwrap();
+    assert_eq!(elsewhere("herdr", &path.display().to_string(), &spots(&home), || { asked.set(true); String::new() }), Some(found));
     assert!(!asked.get(), "a usual spot that has it needs no login shell");
 }
 
