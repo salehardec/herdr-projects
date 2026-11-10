@@ -22,11 +22,32 @@ pub fn has_origin(root: &Path) -> bool {
 pub struct GhOut { pub status: i32, pub stdout: String, pub stderr: String }
 thread_local! { static FAKE_GH: std::cell::RefCell<Option<std::rc::Rc<dyn Fn(&[String]) -> GhOut>>> = const { std::cell::RefCell::new(None) }; }
 pub fn set_fake_gh(f: Option<std::rc::Rc<dyn Fn(&[String]) -> GhOut>>) { FAKE_GH.with(|x| *x.borrow_mut() = f); }
+/// The GitHub repo a remote URL names (`owner/name`), or None when it is no remote at all (a local path): the last two
+/// parts of `https://host/owner/name.git`, `ssh://git@host/owner/name` and `git@host:owner/name.git`.
+fn repo_of_url(url: &str) -> Option<String> {
+    let u = url.trim();
+    if u.is_empty() || u.starts_with('/') || u.starts_with('.') || u.starts_with("file://") { return None; }
+    let rest = match u.split_once("://") { Some((_, r)) => r, None => u.rsplit_once(':')?.1 };
+    let rest = rest.trim_end_matches('/'); let rest = rest.strip_suffix(".git").unwrap_or(rest);
+    let mut it = rest.rsplit('/');
+    let (name, owner) = (it.next()?, it.next()?);
+    let ok = |s: &str| !s.is_empty() && !s.contains([':', '@', ' ']);
+    (ok(owner) && ok(name)).then(|| format!("{owner}/{name}"))
+}
+/// `owner/name` of the folder's `origin`, when it is a remote URL: the repo every gh call of the board is about. A clone
+/// that also has a fork's `upstream` would otherwise have gh take the parent for pull requests, where the branch the
+/// board names (`--head`) is not a branch at all.
+pub fn origin_repo(cwd: &Path) -> Option<String> { git_out(cwd, &["remote", "get-url", "origin"]).ok().and_then(|u| repo_of_url(&u)) }
 pub fn gh(args: &[&str], cwd: &Path, timeout_ms: u64) -> GhOut {
     let a: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     if let Some(f) = FAKE_GH.with(|x| x.borrow().clone()) { return f(&a); }
     crate::runner::user_env();
-    let child = Command::new("gh").args(&a).current_dir(cwd).env("GH_PROMPT_DISABLED", "1").env("GIT_TERMINAL_PROMPT", "0").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn();
+    let mut c = Command::new("gh");
+    c.args(&a).current_dir(cwd).env("GH_PROMPT_DISABLED", "1").env("GIT_TERMINAL_PROMPT", "0").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // Every gh call of the board is about the repo its branch is pushed to: gh's own choice in a fork is the parent,
+    // and a pull request opened there for a branch that only exists in the fork fails ("Head ref must be a branch").
+    if let Some(repo) = origin_repo(cwd) { c.env("GH_REPO", repo); }
+    let child = c.spawn();
     let late = |e: crate::herdr::cli::HerdrError| if e.code == "timeout" { stopped(&format!("gh {}", args.iter().take(2).copied().collect::<Vec<_>>().join(" ")), timeout_ms) } else { e.message };
     match child.map_err(|e| e.to_string()).and_then(|c| crate::herdr::cli::wait_with_timeout(c, timeout_ms).map_err(late)) {
         Ok(r) => GhOut { status: r.status, stdout: r.stdout, stderr: r.stderr },
@@ -113,4 +134,20 @@ pub fn gh_user(cwd: &Path) -> String {
     if base.is_empty() || !base.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') { login = String::new(); }
     let _ = write_json(&file, &json!({ "login": login, "at": if login.is_empty() { now() - 23 * 3600 * 1000 } else { now() } }));
     login
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn a_remote_url_names_its_repo_and_a_local_path_none() {
+        for (url, want) in [("https://github.com/salehardec/herdr-projects.git", Some("salehardec/herdr-projects")),
+            ("https://github.com/salehardec/herdr-projects", Some("salehardec/herdr-projects")),
+            ("ssh://git@github.com/salehardec/herdr-projects.git", Some("salehardec/herdr-projects")),
+            ("git@github.com:salehardec/herdr-projects.git", Some("salehardec/herdr-projects")),
+            ("git@github.com:salehardec/herdr-projects", Some("salehardec/herdr-projects")),
+            ("file:///tmp/origin.git", None), ("/tmp/x/origin.git", None), ("./origin.git", None), ("origin", None), ("", None)] {
+            assert_eq!(repo_of_url(url).as_deref(), want, "{url}");
+        }
+    }
 }
