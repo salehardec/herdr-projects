@@ -155,3 +155,42 @@ fn notify_public_requests_survive_refresh_and_answers_go_only_to_the_author() {
     put(&id, |t| { t.put("stage", "approval"); t.put("checksWait", true); });
     assert!(listed().is_null());
 }
+
+#[test]
+fn notify_public_request_from_an_attempt_has_its_own_address() {
+    let w = world_with(Opts { repo: true, settings: json!({ "board.notify": "tell-me" }), ..Default::default() });
+    RAN.with(|r| r.borrow_mut().clear());
+    let parent = w.add("Parallel work");
+    let attempt = sw::store::attempts::create_attempt(&task(&parent), "A", "pi", Obj::new()).unwrap().t("id");
+    let pane = "pane-attempt";
+    let terminal = "term-attempt";
+    w.patch(|s| s["panes"] = json!([
+        {"pane_id": pane, "terminal_id": terminal, "cwd": w.root_str(), "agent": {"kind": "pi", "name": "attempt", "status": "idle"}}
+    ]));
+    put(&parent, |t| { t.put("stage", "attempts"); t.put("attempts", json!([{"id": attempt}])); });
+    put(&attempt, |t| {
+        t.put("stage", "working"); t.put("agent", "pi");
+        t.put("link", json!({"socket": w.socket, "pane": pane, "terminal": terminal}));
+    });
+    unsafe { std::env::set_var("HERDR_PANE_ID", pane); }
+    command(&["report", &attempt, "--state", "blocked", "--kind", "question", "--msg", "Which option for A?"]).unwrap();
+    unsafe { std::env::remove_var("HERDR_PANE_ID"); }
+    let list = || command(&["list", "--all", "--json"]).unwrap();
+    let first = list();
+    let row = first.as_array().unwrap().iter().find(|t| t.s("id") == attempt).expect("attempt request in the coordinator's list");
+    assert_eq!(row.s("attemptOf"), parent);
+    let r = row.at("pendingRequest");
+    assert_eq!((r.s("taskId"), r.s("question")), (attempt.as_str(), "Which option for A?"));
+    pass(); pass();
+    let requests: Vec<Value> = ran().into_iter().filter_map(|(_, env)| env.iter().find_map(|s|
+        s.strip_prefix("HERDR_PROJECTS_REQUEST=").map(|raw| serde_json::from_str(raw).unwrap()))).collect();
+    assert_eq!(requests, vec![r.clone()]);
+    assert!(command(&["tell", &parent, "--request-id", r.s("requestId"), "--", "Not the parent"]).is_err());
+    put(&parent, |t| t.put("stage", "stopped"));
+    assert!(command(&["tell", &attempt, "--request-id", r.s("requestId"), "--", "Not an active attempt"]).is_err());
+    assert!(prompts(&w, pane).is_empty());
+    put(&parent, |t| t.put("stage", "attempts"));
+    command(&["tell", &attempt, "--request-id", r.s("requestId"), "--", "Only attempt A"]).unwrap();
+    assert_eq!(prompts(&w, pane).last().map(String::as_str), Some("Only attempt A"));
+    assert!(list().as_array().unwrap().iter().all(|t| t.s("id") != attempt));
+}

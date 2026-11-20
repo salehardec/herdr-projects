@@ -24,6 +24,11 @@ pub fn pending(t: &Task) -> Option<&Value> {
         && generation(t, role) == r.at("generation"))
         .then_some(public)
 }
+
+pub(crate) fn active_attempt(t: &Task) -> bool {
+    get(t.s("attemptOf")).is_some_and(|p| !p.b("archivedAt") && p.s("stage") == "attempts"
+        && p.arr("attempts").iter().any(|entry| entry.at("id") == t.at("id")))
+}
 #[derive(Default)]
 pub struct Words { pub options: Vec<String>, pub constraints: Vec<String>, pub pane: String, pub terminal: String }
 
@@ -63,6 +68,7 @@ pub fn answer(id: &str, request_id: &str, text: &str, by: &str) -> Res<Task> {
     // Serialize replies separately from the short-lived task lock: no herdr calls under the task lock.
     with_lock(&format!("request-reply:{id}"), || {
         let t = get(&id).ok_or("The task is gone.")?;
+        if t.b("attemptOf") && !active_attempt(&t) { crate::fail!("That attempt is no longer active."); }
         let Some(public) = pending(&t).filter(|r| r.s("requestId") == request_id) else {
             crate::fail!("That request is no longer pending on this task.");
         };

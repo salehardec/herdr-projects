@@ -62,6 +62,7 @@ The object contains `taskId`, opaque `requestId`, `role` (`agent`, `reviewer`), 
 `auth`), `question`, `options` and `constraints`. Deduplicate by `(taskId, requestId)`: refreshing does not change
 the ID, and a new report has a new ID. Once closed, the field is absent from the next list. Other notifications
 have no `HERDR_PROJECTS_REQUEST`.
+An open request in a parallel attempt has its own task ID; its JSON row also names the parent in `attemptOf`.
 
 Send only the human's own answer to a `question`, using
 `herdr-projects tell <taskId> --request-id <requestId> -- <answer>` on the source board. A stale ID or unavailable

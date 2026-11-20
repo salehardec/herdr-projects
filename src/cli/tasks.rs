@@ -25,6 +25,7 @@ fn brief(t: &Obj) -> Value {
     if t.b("archivedAt") { o.put("archivedAt", t.at("archivedAt").clone()); }
     if let Some(rv) = current_review(t) { o.put("review", rv.clone()); }
     if review_round(t) > 0 { o.put("reviewRound", review_round(t)); }
+    if t.b("attemptOf") { o.put("attemptOf", t.at("attemptOf").clone()); }
     if let Some(r) = crate::pending_request::pending(t) { o.put("pendingRequest", r.clone()); }
     o.retain(|k, v| !v.is_null() && !(k == "app" && *v == json!("")));
     Value::Object(o)
@@ -91,7 +92,14 @@ pub fn command(cmd: &str, a: &Args) -> Res<(Value, String)> {
             let keys = repo_keys();
             let all: Vec<Obj> = board(true).into_iter().filter(|t| if flags.b("archived") { t.b("archivedAt") } else { flags.b("all") || !q.is_empty() || !t.b("archivedAt") })
                 .filter(|t| q.is_empty() || format!("{} #{} {} {} {} {} {} {}", tag_of(t.s("id"), &keys), t.t("n"), t.s("id"), t.s("title"), t.s("note"), t.t("state"), t.s("shownApp"), t.s("description")).to_lowercase().contains(&q)).collect();
-            let (v, text) = (Value::Array(all.iter().map(brief).collect()), if all.is_empty() { "No tasks.".into() } else { all.iter().map(|t| line(t, &keys)).collect::<Vec<_>>().join("\n") });
+            let mut rows: Vec<Value> = all.iter().map(brief).collect();
+            if flags.b("all") && flags.b("json") {
+                // Attempts are not normal rows; expose only their pending routes, with their exact task IDs.
+                rows.extend(all.iter().filter(|t| t.s("stage") == "attempts" && !t.b("archivedAt"))
+                    .flat_map(|t| t.arr("tries")).filter_map(Value::as_object)
+                    .filter(|t| crate::pending_request::pending(t).is_some()).map(brief));
+            }
+            let (v, text) = (Value::Array(rows), if all.is_empty() { "No tasks.".into() } else { all.iter().map(|t| line(t, &keys)).collect::<Vec<_>>().join("\n") });
             // In an autopilot turn, its history too: the board is its only memory (autopilot/history.rs).
             match &pilot { Some(co) => crate::autopilot::history::with_history(co, v, text), None => (v, text) }
         }
