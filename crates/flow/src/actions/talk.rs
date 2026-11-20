@@ -101,6 +101,7 @@ pub fn rearm(t: &mut Task, keep_intent: bool, live: bool, chat: bool) -> Res<()>
     for k in ["tidy", "waiting", "cutRetry"] { t.put(k, Value::Null); }
     fresh_list(t);
     if t.at("failure").s("stage") == "send" { t.put("failure", Value::Null); } // what you say now goes into the same box
+    t.del("request");
     t.put("armedAt", now()); t.put("expectedWake", Value::Null); t.put("turnOpen", true); t.put("turnBy", "reply"); t.put("selfBlocked", Value::Null); t.put("blocked", Value::Null);
     if t.at("failure").b("auth") { t.put("failure", Value::Null); } // a reply or a retry after a login problem is how "fixed" is said
     if !keep_intent { if t.b("mergeIntent") || t.s("stage") == "approval" { t.put("requireApproval", true); } t.put("mergeIntent", Value::Null); }
@@ -159,6 +160,7 @@ pub(crate) fn stop_as(id: &str, yours: bool) -> Res<(Task, Ended)> {
         if yours && (t.b("mergeIntent") || t.s("stage") == "approval") { t.put("requireApproval", true); }
         t.put("stage", "stopped"); t.put("stoppedAt", now()); t.put("stopSeq", seq); t.put("sawIdleAfterStop", false);
         for k in ["expectedWake", "watch", "mergeIntent", "waiting", "limitStop"] { t.put(k, Value::Null); }
+        t.del("request");
         t.put("turnOpen", false); t.put("msg", "");
         Ok(Change::Write)
     })?;

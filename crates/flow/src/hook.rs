@@ -253,6 +253,7 @@ pub fn human_turn_ended(t: &mut Task) {
     // during a fast turn still counts.
     let armed = if t.at("handled").b("at") { t.at("handled").at("at").clone() } else if t.b("armedAt") { t.at("armedAt").clone() } else { json!(0) };
     t.put("armedAt", armed); t.put("expectedWake", Value::Null); t.put("turnOpen", false);
+    t.del("request");
     t.put("stage", "working"); t.put("msg", ""); t.del("kind"); t.put("mergeFailed", false);
 }
 fn deliver_inbox(t: &Task, api: &Herdr) {

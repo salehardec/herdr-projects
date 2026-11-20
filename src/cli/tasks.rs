@@ -25,10 +25,17 @@ fn brief(t: &Obj) -> Value {
     if t.b("archivedAt") { o.put("archivedAt", t.at("archivedAt").clone()); }
     if let Some(rv) = current_review(t) { o.put("review", rv.clone()); }
     if review_round(t) > 0 { o.put("reviewRound", review_round(t)); }
+    if let Some(r) = crate::pending_request::pending(t) { o.put("pendingRequest", r.clone()); }
     o.retain(|k, v| !v.is_null() && !(k == "app" && *v == json!("")));
     Value::Object(o)
 }
 fn shown_of(id: &str) -> Value { board(true).into_iter().find(|t| t.s("id") == id).map(|t| brief(&t)).unwrap_or(Value::Null) }
+
+fn public_strings(flags: &Obj, key: &str) -> Res<Vec<String>> {
+    if !flags.has(key) { return Ok(vec![]); }
+    // Don't echo malformed input: it is not known to be public.
+    serde_json::from_str(flags.s(key)).map_err(|_| format!("--{key} needs a JSON array of public strings.").into())
+}
 
 pub fn command(cmd: &str, a: &Args) -> Res<(Value, String)> {
     let (pos, flags) = (&a.pos, &a.flags);
@@ -40,6 +47,13 @@ pub fn command(cmd: &str, a: &Args) -> Res<(Value, String)> {
     // Who runs it decides what is allowed (autopilot/allow.rs): Some, a coordinator's autopilot turn.
     let me = caller();
     let pilot = crate::autopilot::allow::guard(cmd, pos, flags, me.as_ref().map(|(t, r)| (t, *r)))?;
+    if cmd == "tell" && flags.has("request-id") {
+        if me.is_some() || pilot.is_some() || crate::autopilot::turn::caller().as_ref().and_then(crate::autopilot::turn::agents_turn).is_some() {
+            crate::fail!("A pending request needs the human's own answer.");
+        }
+        let t = crate::pending_request::answer(&need(1, "an id")?, flags.s("request-id"), &rest(2), talk::asker())?;
+        return Ok((shown_of(t.s("id")), "Sent to the request author".into()));
+    }
     // Another machine's task (`vm-b:web/7`): the action is that machine's (remote/act.rs).
     if let Some(out) = crate::remote::act::far_command(cmd, pos, flags, pilot.is_some())? { if let Some(co) = &pilot { crate::autopilot::allow::note(co, cmd, pos); } return Ok(out); }
     let out = match cmd {
@@ -95,10 +109,17 @@ pub fn command(cmd: &str, a: &Args) -> Res<(Value, String)> {
             let target = find(&id)?;
             // Run from the task's own agent's or reviewer's pane: it may not mark its own task done (filing.rs).
             let own = who.filter(|c| c.0.s("id") == target.s("id")).map(|c| c.1).unwrap_or("");
-            let mine = own == "agent";
-            let t = filing::report(target.s("id"), filing::Report { state: flag("state").unwrap_or_default(), kind: flag("kind").unwrap_or_default(), msg: flag("msg").unwrap_or_default(), title: flag("title").unwrap_or_default(), progress: flags.get("progress").cloned(), eta: flags.get("eta").cloned(), own })?;
+            let state = flag("state").unwrap_or_default();
+            let explicit = flags.has("options") || flags.has("constraints");
+            if explicit && (state != "blocked" || own.is_empty()) { crate::fail!("Public request details must be reported as blocked from the task's own worker or reviewer pane."); }
+            let public = if state == "blocked" && !own.is_empty() {
+                let pane = crate::util::env_val("HERDR_PANE_ID").unwrap_or_default();
+                let terminal = crate::flow::pane_owner::terminal_of(&current_socket(), &pane);
+                Some(crate::pending_request::Words { options: public_strings(flags, "options")?, constraints: public_strings(flags, "constraints")?, pane, terminal })
+            } else { None };
+            let t = filing::report(target.s("id"), filing::Report { state, kind: flag("kind").unwrap_or_default(), msg: flag("msg").unwrap_or_default(), title: flag("title").unwrap_or_default(), progress: flags.get("progress").cloned(), eta: flags.get("eta").cloned(), own, public })?;
             let what = [flag("title").map(|_| "title".to_string()), flag("state")].into_iter().flatten().collect::<Vec<_>>().join(", ");
-            let text = if mine && flag("state").as_deref() == Some("blocked") { "Reported: you are waiting, not finished, so no check and no review follow this stop. Stop now; the human's answer arrives as your next message.".to_string() }
+            let text = if !own.is_empty() && flag("state").as_deref() == Some("blocked") { "Reported: you are waiting, not finished, so no check and no review follow this stop. Stop now; the human's answer arrives as your next message.".to_string() }
                 else { format!("{}: updated{}{}", t.s("id"), if what.is_empty() { String::new() } else { format!(" ({what})") }, flag("title").map(|x| title_note(&x)).unwrap_or_default()) };
             (shown_of(t.s("id")), text)
         }
@@ -119,7 +140,14 @@ pub fn command(cmd: &str, a: &Args) -> Res<(Value, String)> {
             let (t, msg) = crate::after::change::change(&need(1, "an id")?, refs)?;
             (shown_of(t.s("id")), msg)
         }
-        "tell" => { let id = need(1, "an id")?; need(2, "the text")?; said(talk::reply(&id, &rest(2), talk::asker())?) }
+        "tell" => {
+            let id = need(1, "an id")?;
+            need(2, "the text")?;
+            if find(&id).ok().as_ref().and_then(crate::pending_request::pending).is_some() {
+                crate::fail!("Use --request-id for a pending question; open the author's pane for permission or sign-in.");
+            }
+            said(talk::reply(&id, &rest(2), talk::asker())?)
+        }
         "stop" => { let s = talk::stop(&need(1, "an id")?)?; (shown_of(s.task.s("id")), talk::stopped(&format!("{}: stopped", s.task.s("id")), &s.msg)) }
         "start" => { let t = filing::start_human(&need(1, "an id")?)?; (shown_of(t.s("id")), format!("{}: in progress", t.s("id"))) }
         "pick" => said(crate::attempts::settle::pick(&need(1, "an id")?, &pos.get(2).cloned().unwrap_or_default())?),

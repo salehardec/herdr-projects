@@ -39,7 +39,7 @@ pub fn pin(id: &str) -> Res<Task> { let cur = find(id)?; update(cur.s("id"), |t|
 pub fn set_pin(id: &str, on: bool) -> Res<Task> { let cur = find(id)?; update(cur.s("id"), |t| { assert_unarchived(t)?; t.put("pinned", on); Ok(Change::Write) }) }
 
 #[derive(Default)]
-pub struct Report { pub state: String, pub kind: String, pub msg: String, pub title: String, pub progress: Option<Value>, pub eta: Option<Value>, pub own: &'static str }
+pub struct Report { pub state: String, pub kind: String, pub msg: String, pub title: String, pub progress: Option<Value>, pub eta: Option<Value>, pub own: &'static str, pub public: Option<crate::pending_request::Words> }
 fn clamp_pct(p: &Value) -> i64 { (number(p).round() as i64).clamp(0, 100) }
 /// A report: the human (or any agent) says where a task stands. `own`: run from the task's own pane, "agent" or
 /// "reviewer" ("" for anyone else). Its own agent may say only that it is blocked, and the turn after that is not a
@@ -60,6 +60,17 @@ pub fn report(id: &str, r: Report) -> Res<Task> {
         assert_unarchived(t)?;
         if !r.title.is_empty() { retitle(t, &r.title); }
         if r.state == "blocked" {
+            if let Some(words) = &r.public { crate::pending_request::record(t, r.own, &r.kind, &r.msg, words)?; }
+            else { t.del("request"); }
+            if r.own == "reviewer" {
+                if r.public.is_none() { crate::fail!("A reviewer must report from their own live pane."); }
+                t.put("stage", "reviewneeds");
+                t.put("kind", if r.kind.is_empty() { "question" } else { &r.kind });
+                t.put("msg", one_line(&r.msg, 2048));
+                return Ok(Change::Write);
+            }
+        }
+        if r.state == "blocked" {
             t.put("stage", "asks");
             t.put("kind", if KINDS.contains(&r.kind.as_str()) { r.kind.clone() } else { "question".into() });
             let m = one_line(&r.msg, 2048);
@@ -70,6 +81,7 @@ pub fn report(id: &str, r: Report) -> Res<Task> {
             return Ok(Change::Write);
         }
         if delegated && runner_alive(t) { crate::fail!("{} is in the middle of a workflow step. Stop it first.", t.s("id")); }
+        t.del("request");
         t.del("kind");
         t.put("msg", one_line(&r.msg, 2048));
         if r.state != "error" { t.put("failure", Value::Null); }

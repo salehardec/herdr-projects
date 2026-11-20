@@ -3,6 +3,7 @@
 //! happened in its environment; `none` does neither.
 use crate::clock::now;
 use crate::json::*;
+use crate::pending_request::pending;
 use crate::store::attempts::attempts_of;
 use crate::store::settings::lookup::setting_text;
 use crate::store::tasks::{update, Change};
@@ -17,7 +18,11 @@ pub fn event_of(t: &Obj) -> &'static str {
     if st == "approval" { return if t.b("failure") || t.b("prFailure") || t.b("syncBlocked") { "needs you" } else { "ready to approve" }; }
     ""
 }
-fn noted(t: &Obj, event: &str) -> bool { t.at("notice").s("event") == event && (event.is_empty() || t.at("notice").s("stage") == t.s("stage")) }
+fn request_id(t: &Obj) -> &str { pending(t).map(|r| r.s("requestId")).unwrap_or("") }
+fn noted(t: &Obj, event: &str) -> bool {
+    let notice = t.at("notice");
+    notice.s("event") == event && (event.is_empty() || (notice.s("stage") == t.s("stage") && notice.s("requestId") == request_id(t)))
+}
 /// The housekeeping pass: each event is noted on its task once (`notice`), and the command is run for it.
 pub fn notify_pass(tasks: &[Obj]) {
     let how = setting_text("board.notify", None);
@@ -27,12 +32,16 @@ pub fn notify_pass(tasks: &[Obj]) {
         let Ok(t) = update(seen.s("id"), |t| {
             let ev = event_of(t);
             if noted(t, ev) { return Ok(Change::Keep); }
-            t.put("notice", if ev.is_empty() { Value::Null } else { json!({ "event": ev, "stage": t.s("stage"), "at": now() }) });
+            t.put("notice", if ev.is_empty() { Value::Null } else { json!({ "event": ev, "stage": t.s("stage"), "at": now(), "requestId": request_id(t) }) });
             fresh = !ev.is_empty();
             Ok(Change::Write)
         }) else { continue };
         if !fresh || how == "none" || how == "bell" { continue; }
-        let env = [("HERDR_PROJECTS_ID", t.t("id")), ("HERDR_PROJECTS_TITLE", t.t("title")), ("HERDR_PROJECTS_EVENT", t.at("notice").t("event"))];
-        crate::runner::detached_sh(&how, &env);
+        let env = [
+            ("HERDR_PROJECTS_ID", t.t("id")), ("HERDR_PROJECTS_TITLE", t.t("title")),
+            ("HERDR_PROJECTS_EVENT", t.at("notice").t("event")),
+            ("HERDR_PROJECTS_REQUEST", pending(&t).map(Value::to_string).unwrap_or_default()),
+        ];
+        crate::runner::detached_sh(&how, if env[3].1.is_empty() { &env[..3] } else { &env });
     }
 }
