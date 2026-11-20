@@ -122,8 +122,8 @@ pub fn command(cmd: &str, a: &Args) -> Res<(Value, String)> {
             if explicit && (state != "blocked" || own.is_empty()) { crate::fail!("Public request details must be reported as blocked from the task's own worker or reviewer pane."); }
             let public = if state == "blocked" && !own.is_empty() {
                 let pane = crate::util::env_val("HERDR_PANE_ID").unwrap_or_default();
-                let terminal = crate::flow::pane_owner::terminal_of(&current_socket(), &pane);
-                Some(crate::pending_request::Words { options: public_strings(flags, "options")?, constraints: public_strings(flags, "constraints")?, pane, terminal })
+                let live = crate::herdr::Herdr::new(Some(current_socket())).agent_get(&pane)?.ok_or("No live request author in this pane.")?;
+                Some(crate::pending_request::Words { options: public_strings(flags, "options")?, constraints: public_strings(flags, "constraints")?, pane, live })
             } else { None };
             let t = filing::report(target.s("id"), filing::Report { state, kind: flag("kind").unwrap_or_default(), msg: flag("msg").unwrap_or_default(), title: flag("title").unwrap_or_default(), progress: flags.get("progress").cloned(), eta: flags.get("eta").cloned(), own, public })?;
             let what = [flag("title").map(|_| "title".to_string()), flag("state")].into_iter().flatten().collect::<Vec<_>>().join(", ");

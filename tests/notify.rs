@@ -194,3 +194,24 @@ fn notify_public_request_from_an_attempt_has_its_own_address() {
     assert_eq!(prompts(&w, pane).last().map(String::as_str), Some("Only attempt A"));
     assert!(list().as_array().unwrap().iter().all(|t| t.s("id") != attempt));
 }
+
+#[test]
+fn notify_public_worker_request_closes_after_a_fast_answer_in_its_terminal() {
+    let w = world_with(Opts { repo: true, settings: json!({ "review.when": "never" }), ..Default::default() });
+    w.script(json!({ "worker": [{"status": "done"}, {"note": "Done after the answer."}] }));
+    let id = w.add("Answer in the terminal");
+    delegate(&id);
+    drain();
+    let pane = task(&id).at("link").t("pane");
+    assert!(!prompts(&w, &pane).is_empty());
+    unsafe { std::env::set_var("HERDR_PANE_ID", &pane); }
+    command(&["report", &id, "--state", "blocked", "--kind", "question", "--msg", "Which option?"]).unwrap();
+    unsafe { std::env::remove_var("HERDR_PANE_ID"); }
+    let pending = || command(&["list", "--all", "--json"]).unwrap()[0].at("pendingRequest").clone();
+    assert!(!pending().is_null());
+    // A complete turn can happen between two status readings.
+    let index = w.state().arr("panes").iter().position(|p| p.s("pane_id") == pane).unwrap();
+    common::agents::play(&w.fake, index, "Option B");
+    on_pane(&w, &pane);
+    assert!(pending().is_null());
+}

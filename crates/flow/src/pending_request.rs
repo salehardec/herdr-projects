@@ -30,14 +30,15 @@ pub(crate) fn active_attempt(t: &Task) -> bool {
         && p.arr("attempts").iter().any(|entry| entry.at("id") == t.at("id")))
 }
 #[derive(Default)]
-pub struct Words { pub options: Vec<String>, pub constraints: Vec<String>, pub pane: String, pub terminal: String }
+pub struct Words { pub options: Vec<String>, pub constraints: Vec<String>, pub pane: String, pub live: Value }
 
 pub(crate) fn record(t: &mut Task, role: &str, kind: &str, question: &str, words: &Words) -> Res<()> {
     let link = author_link(t, role);
-    if words.pane.is_empty() || link.s("pane") != words.pane || !t.at("link").b("socket") || words.terminal.is_empty() {
+    let terminal = words.live.s("terminal_id");
+    if words.pane.is_empty() || link.s("pane") != words.pane || !t.at("link").b("socket") || terminal.is_empty() {
         crate::fail!("Cannot verify the request author's terminal.");
     }
-    if role == "reviewer" && (link.s("terminal") != words.terminal || !matches!(t.s("stage"), "reviewing" | "reviewneeds")) {
+    if role == "reviewer" && (link.s("terminal") != terminal || !matches!(t.s("stage"), "reviewing" | "reviewneeds")) {
         crate::fail!("This reviewer is not reviewing the task now.");
     }
     if !kind.is_empty() && !KINDS.contains(&kind) { crate::fail!("Expected --kind question, permission or auth."); }
@@ -47,9 +48,26 @@ pub(crate) fn record(t: &mut Task, role: &str, kind: &str, question: &str, words
         "kind": kind, "question": question, "options": words.options, "constraints": words.constraints });
     // A single environment value must fit in the existing shell-command notification. Reject rather than truncate.
     if public.to_string().len() > 64 * 1024 { crate::fail!("Public request exceeds 64 KiB of JSON."); }
-    t.put("request", json!({ "public": public, "terminal": words.terminal, "pane": link.at("pane"),
-        "socket": t.at("link").at("socket"), "generation": generation(t, role) }));
+    let rest = if matches!(words.live.s("agent_status"), "idle" | "done") { words.live.at("state_change_seq") } else { &Value::Null };
+    t.put("request", json!({ "public": public, "terminal": terminal, "pane": link.at("pane"),
+        "socket": t.at("link").at("socket"), "generation": generation(t, role), "restSeq": rest }));
     Ok(())
+}
+
+/// Evidence of a new turn after the request author's asking turn was seen at rest.
+pub(crate) fn worker_resumed(t: &Task, a: &Value) -> bool {
+    let r = t.at("request");
+    pending(t).is_some_and(|p| p.s("role") == "agent")
+        && a.at("terminal_id") == r.at("terminal") && r.at("restSeq").is_number()
+        && a.i("state_change_seq") > r.i("restSeq")
+        && (a.s("agent_status") == "working" || (matches!(a.s("agent_status"), "idle" | "done") && a.i("completion_seq") > r.i("restSeq")))
+}
+
+pub(crate) fn worker_at_rest(t: &mut Task, a: &Value) {
+    if pending(t).is_some_and(|p| p.s("role") == "agent") && t.at("request").at("terminal") == a.at("terminal_id")
+        && !t.at("request").at("restSeq").is_number() {
+        t.obj_mut("request").put("restSeq", a.at("state_change_seq").clone());
+    }
 }
 
 /// Close the reviewer's request without touching the worker's turn or the running review's guard.

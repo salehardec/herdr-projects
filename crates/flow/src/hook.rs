@@ -113,6 +113,14 @@ pub fn apply(id: &str, a: &Value, api: &Herdr) {
             if !(seq > t.i("stopSeq") && t.b("sawIdleAfterStop")) { return Ok(Change::Write); }
         }
         if ["todo", "progress", "done", "queued", "starting", "setup"].contains(&t.s("stage")) { return Ok(Change::Write); }
+        if crate::pending_request::worker_resumed(t, a) {
+            for key in ["selfBlocked", "blocked", "request"] { t.del(key); }
+            if status != "working" {
+                human_turn_ended(t);
+                then = Then::FinishForce;
+                return Ok(Change::Write);
+            }
+        }
         if status == "working" {
             if t.b("selfBlocked") { return Ok(Change::Write); } // it reported itself blocked and has not stopped yet: still that same turn
             if t.b("expectedWake") { if t.s("stage") != "working" && !runner_alive(t) { t.put("stage", "working"); } return Ok(Change::Write); } // the plugin's own turn: flaps change nothing
@@ -154,6 +162,7 @@ pub fn apply(id: &str, a: &Value, api: &Herdr) {
                 return Ok(Change::Write);
             }
             if t.b("selfBlocked") && t.s("stage") == "asks" { // it said it is blocked, then stopped: that is not a finish
+                crate::pending_request::worker_at_rest(t, a);
                 let note = note_stat(t).map(|n| json!(n.0)).unwrap_or_else(|| t.at("handled").at("note").clone());
                 let h = t.obj_mut("handled");
                 h.put("comp", comp.clone()); h.put("seq", a.at("state_change_seq").clone()); h.put("term", a.at("terminal_id").clone()); h.put("note", note); h.put("at", now());
