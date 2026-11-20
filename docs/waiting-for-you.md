@@ -40,6 +40,35 @@ from the task's own agent's pane, or its reviewer's, is refused, nothing changes
 finishes when the agent ends its turn, and the board then checks, reviews and merges it. Marking a task done with
 nothing merged stays yours (and the Coordinator's, on your word), as does `finish <id>`.
 
+## Public request for the coordinator
+
+From the worker's or reviewer's own Herdr pane, put the complete public question in `--msg`. Newlines are preserved.
+Give every choice and restriction explicitly as JSON arrays of strings; omitted arrays are empty:
+
+```sh
+herdr-projects report repo/7 --state blocked --kind question \
+  --msg 'Which check should I run before continuing?' \
+  --options '["Unit tests","Integration tests"]' \
+  --constraints '["Choose one"]'
+```
+
+Never put credentials, tokens, sign-in codes or private material in these fields. The author is taken from the
+owning pane, not an argument or a task's status. A generic dialog with no explicit report, a check waiting for CI,
+or a blocked status reported outside the author's pane does not provide a public request.
+
+`list --all --json` adds `pendingRequest` to the task while that request is open. The existing `board.notify`
+command receives the same object as JSON in `HERDR_PROJECTS_REQUEST`, with `HERDR_PROJECTS_EVENT=needs you`.
+The object contains `taskId`, opaque `requestId`, `role` (`agent`, `reviewer`), `kind` (`question`, `permission`,
+`auth`), `question`, `options` and `constraints`. Deduplicate by `(taskId, requestId)`: refreshing does not change
+the ID, and a new report has a new ID. Once closed, the field is absent from the next list. Other notifications
+have no `HERDR_PROJECTS_REQUEST`.
+An open request in a parallel attempt has its own task ID; its JSON row also names the parent in `attemptOf`.
+
+Send only the human's own answer to a `question`, using
+`herdr-projects tell <taskId> --request-id <requestId> -- <answer>` on the source board. A stale ID or unavailable
+author is refused without routing to another agent. For `permission` or `auth`, open the author's pane instead;
+do not send a confirmation or secret through the coordinator.
+
 ## A report saved early
 
 A research-only task's result is a report, and saving it finishes nothing. An agent may save an interim report, add to

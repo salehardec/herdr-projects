@@ -11,6 +11,7 @@ pub const HELP: &str = r#"herdr-projects: a work board for herdr
   herdr-projects list [--archived] [--all] [--pinned] [--query TEXT] [--json]
   herdr-projects report <id> --state idle|working|blocked|done|error [--kind question|permission|auth] [--msg TEXT] [--title TEXT]
                          [--progress 0-100] [--eta MINUTES]   (your own task, with --state working: how far, and minutes left)
+                         [--options JSON] [--constraints JSON] (public string arrays, from the blocked author's pane)
   herdr-projects describe <id> <text>          write or replace a task's description
   (a title is at most 60 characters: a longer one is shortened at a word, its full text kept in the description)
   (an <id> is repo/134; every repo has a short key, made from its name, and HSW-134 names the same task, in any
@@ -23,6 +24,7 @@ pub const HELP: &str = r#"herdr-projects: a work board for herdr
                                       --now: start a task that waits without waiting
   herdr-projects after <id> [ID[,ID…] | --clear]   what a task waits for: shown, changed, or dropped (it starts then)
   herdr-projects tell <id> <text>              send a message to the task's agent
+  herdr-projects tell <id> --request-id ID -- <answer>   send your answer to the author of that pending question
   herdr-projects stop <id>                     stop its agent
   herdr-projects approve <id> [--anyway]       merge finished work that waits for approval (--anyway: also when its review
                                                 or its pull request's checks on GitHub failed);

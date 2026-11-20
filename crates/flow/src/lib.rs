@@ -26,6 +26,7 @@ pub mod land;
 pub mod leftovers;
 pub mod limits;
 pub mod notify;
+pub mod pending_request;
 pub mod plan;
 pub mod remote;
 pub mod review_page;

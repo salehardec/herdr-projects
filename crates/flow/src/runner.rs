@@ -83,6 +83,7 @@ pub fn detached_sh(cmd: &str, env: &[(&str, String)]) -> u32 {
     user_env();
     let mut c = Command::new("sh");
     c.args(["-c", cmd]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    c.env_remove("HERDR_PROJECTS_REQUEST"); // a nested command must not inherit an earlier task's request
     for (k, v) in env { c.env(k, v); }
     detach(&mut c);
     start_reaped(&mut c)

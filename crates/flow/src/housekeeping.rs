@@ -61,7 +61,7 @@ fn pass(socket: &str, force: Force) {
             if get(t.s("id")).is_none_or(|c| runner_alive(&c)) { continue; }
             if due(&format!("tidy-{}", key(t.s("id"))), 30000) { spawn_runner("cleanup", t.s("id"), if t.at("tidy").s("deleteBranch") == "merged" { &["--merged"] } else { &[] }); }
         }
-        crate::notify::notify_pass(&list(ListOpts::default()));
+        crate::notify::notify_pass(&list(ListOpts { attempts: true, ..Default::default() }));
         resync(&tasks, socket);
         // A chat that changed the code, and you are done with it: its one review (finish/chat.rs).
         crate::finish::chat::chat_pass(&tasks, socket);

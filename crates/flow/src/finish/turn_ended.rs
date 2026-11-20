@@ -49,6 +49,7 @@ fn human_turn(t: &mut Task) {
     fresh_list(t);
     let armed = if t.at("handled").b("at") { t.at("handled").i("at") } else { t.i("armedAt") };
     t.put("armedAt", armed); t.put("expectedWake", Value::Null); t.put("turnOpen", false);
+    t.del("request");
     t.put("stage", "working"); t.put("msg", ""); t.del("kind"); t.put("mergeFailed", false);
     if t.at("failure").b("auth") { t.put("failure", Value::Null); }
 }

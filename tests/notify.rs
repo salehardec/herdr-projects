@@ -75,3 +75,143 @@ fn board_notify_a_command_runs_once_per_event_with_the_task_s_id_title_and_what_
     assert_eq!(rings(&mut b), 0);
     assert_eq!(ran().len(), 2);
 }
+
+fn command(args: &[&str]) -> sw::err::Res<Value> {
+    use sw::cli::flags::{parse, refuse_unknown};
+    let a = parse(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+    refuse_unknown(args[0], &a)?;
+    sw::cli::tasks::command(args[0], &a).map(|(v, _)| v)
+}
+
+#[test]
+fn notify_public_requests_survive_refresh_and_answers_go_only_to_the_author() {
+    let w = world_with(Opts { repo: true, settings: json!({ "board.notify": "tell-me" }), ..Default::default() });
+    RAN.with(|r| r.borrow_mut().clear());
+    let id = w.add("A task with two authors");
+    let worker = "pane-worker";
+    let reviewer = "pane-reviewer";
+    w.patch(|s| s["panes"] = json!([
+        {"pane_id": worker, "terminal_id": "term-worker", "cwd": w.root_str(), "agent": {"kind": "pi", "name": "worker", "status": "idle"}},
+        {"pane_id": reviewer, "terminal_id": "term-reviewer", "cwd": w.root_str(), "agent": {"kind": "pi", "name": "worker-r", "status": "idle"}}
+    ]));
+    put(&id, |t| {
+        t.put("agent", "pi");
+        t.put("stage", "working");
+        t.put("link", json!({"socket": w.socket, "pane": worker, "terminal": "term-worker",
+            "reviewer": {"pane": reviewer, "terminal": "term-reviewer"}}));
+    });
+    let listed = || command(&["list", "--all", "--json"]).unwrap()[0].at("pendingRequest").clone();
+    let mut old_id = String::new();
+    for (role, pane, other) in [("agent", worker, reviewer), ("reviewer", reviewer, worker)] {
+        if role == "reviewer" { put(&id, |t| { t.put("stage", "reviewing"); t.put("runner", sw::store::files::marker()); }); }
+        let question = format!("Question from {role}?\n\nRead the whole second paragraph.");
+        unsafe { std::env::set_var("HERDR_PANE_ID", pane); }
+        command(&["report", &id, "--state", "blocked", "--kind", "question", "--msg", &question,
+            "--options", r#"["First","Second"]"#, "--constraints", r#"["Exactly one"]"#]).unwrap();
+        unsafe { std::env::remove_var("HERDR_PANE_ID"); }
+        let request = listed();
+        let request_id = request.s("requestId");
+        assert!(!request_id.is_empty() && request_id != old_id);
+        assert_eq!(request, json!({"taskId": id, "requestId": request_id, "role": role, "kind": "question",
+            "question": question, "options": ["First", "Second"], "constraints": ["Exactly one"]}));
+        pass(); pass();
+        assert_eq!(listed(), request);
+        let events = ran();
+        assert_eq!(events.len(), if role == "agent" { 1 } else { 2 });
+        let raw = events.last().unwrap().1.iter().find_map(|s| s.strip_prefix("HERDR_PROJECTS_REQUEST=")).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(raw).unwrap(), request);
+        let other_before = prompts(&w, other);
+        let author_before = prompts(&w, pane);
+        let wrong_id = if old_id.is_empty() { "stale" } else { &old_id };
+        assert!(command(&["tell", &id, "--request-id", wrong_id, "--", "Wrong"]).is_err());
+        assert_eq!(prompts(&w, pane), author_before);
+        assert_eq!(listed(), request);
+        command(&["tell", &id, "--request-id", request_id, "--", "Second"]).unwrap();
+        assert_eq!(prompts(&w, pane).last().map(String::as_str), Some("Second"));
+        assert_eq!(prompts(&w, other), other_before);
+        assert!(listed().is_null());
+        assert!(command(&["tell", &id, "--request-id", request_id, "--", "Again"]).is_err());
+        old_id = request_id.to_string();
+    }
+    for kind in ["permission", "auth"] {
+        unsafe { std::env::set_var("HERDR_PANE_ID", reviewer); }
+        command(&["report", &id, "--state", "blocked", "--kind", kind, "--msg", "Use the author's panel"]).unwrap();
+        unsafe { std::env::remove_var("HERDR_PANE_ID"); }
+        let request = listed();
+        assert_eq!((request.s("role"), request.s("kind")), ("reviewer", kind));
+        let before = prompts(&w, reviewer);
+        assert!(command(&["tell", &id, "--request-id", request.s("requestId"), "--", "Do not send"]).is_err());
+        assert_eq!(prompts(&w, reviewer), before);
+        assert_eq!(listed(), request);
+        pass();
+    }
+    let events = ran();
+    assert_eq!(events.len(), 4);
+    for (event, kind) in events[2..].iter().zip(["permission", "auth"]) {
+        let raw = event.1.iter().find_map(|s| s.strip_prefix("HERDR_PROJECTS_REQUEST=")).unwrap();
+        let request: Value = serde_json::from_str(raw).unwrap();
+        assert_eq!((request.s("kind"), request.s("role")), (kind, "reviewer"));
+    }
+    put(&id, |t| { t.put("stage", "approval"); t.put("checksWait", true); });
+    assert!(listed().is_null());
+}
+
+#[test]
+fn notify_public_request_from_an_attempt_has_its_own_address() {
+    let w = world_with(Opts { repo: true, settings: json!({ "board.notify": "tell-me" }), ..Default::default() });
+    RAN.with(|r| r.borrow_mut().clear());
+    let parent = w.add("Parallel work");
+    let attempt = sw::store::attempts::create_attempt(&task(&parent), "A", "pi", Obj::new()).unwrap().t("id");
+    let pane = "pane-attempt";
+    let terminal = "term-attempt";
+    w.patch(|s| s["panes"] = json!([
+        {"pane_id": pane, "terminal_id": terminal, "cwd": w.root_str(), "agent": {"kind": "pi", "name": "attempt", "status": "idle"}}
+    ]));
+    put(&parent, |t| { t.put("stage", "attempts"); t.put("attempts", json!([{"id": attempt}])); });
+    put(&attempt, |t| {
+        t.put("stage", "working"); t.put("agent", "pi");
+        t.put("link", json!({"socket": w.socket, "pane": pane, "terminal": terminal}));
+    });
+    unsafe { std::env::set_var("HERDR_PANE_ID", pane); }
+    command(&["report", &attempt, "--state", "blocked", "--kind", "question", "--msg", "Which option for A?"]).unwrap();
+    unsafe { std::env::remove_var("HERDR_PANE_ID"); }
+    let list = || command(&["list", "--all", "--json"]).unwrap();
+    let first = list();
+    let row = first.as_array().unwrap().iter().find(|t| t.s("id") == attempt).expect("attempt request in the coordinator's list");
+    assert_eq!(row.s("attemptOf"), parent);
+    let r = row.at("pendingRequest");
+    assert_eq!((r.s("taskId"), r.s("question")), (attempt.as_str(), "Which option for A?"));
+    pass(); pass();
+    let requests: Vec<Value> = ran().into_iter().filter_map(|(_, env)| env.iter().find_map(|s|
+        s.strip_prefix("HERDR_PROJECTS_REQUEST=").map(|raw| serde_json::from_str(raw).unwrap()))).collect();
+    assert_eq!(requests, vec![r.clone()]);
+    assert!(command(&["tell", &parent, "--request-id", r.s("requestId"), "--", "Not the parent"]).is_err());
+    put(&parent, |t| t.put("stage", "stopped"));
+    assert!(command(&["tell", &attempt, "--request-id", r.s("requestId"), "--", "Not an active attempt"]).is_err());
+    assert!(prompts(&w, pane).is_empty());
+    put(&parent, |t| t.put("stage", "attempts"));
+    command(&["tell", &attempt, "--request-id", r.s("requestId"), "--", "Only attempt A"]).unwrap();
+    assert_eq!(prompts(&w, pane).last().map(String::as_str), Some("Only attempt A"));
+    assert!(list().as_array().unwrap().iter().all(|t| t.s("id") != attempt));
+}
+
+#[test]
+fn notify_public_worker_request_closes_after_a_fast_answer_in_its_terminal() {
+    let w = world_with(Opts { repo: true, settings: json!({ "review.when": "never" }), ..Default::default() });
+    w.script(json!({ "worker": [{"status": "done"}, {"note": "Done after the answer."}] }));
+    let id = w.add("Answer in the terminal");
+    delegate(&id);
+    drain();
+    let pane = task(&id).at("link").t("pane");
+    assert!(!prompts(&w, &pane).is_empty());
+    unsafe { std::env::set_var("HERDR_PANE_ID", &pane); }
+    command(&["report", &id, "--state", "blocked", "--kind", "question", "--msg", "Which option?"]).unwrap();
+    unsafe { std::env::remove_var("HERDR_PANE_ID"); }
+    let pending = || command(&["list", "--all", "--json"]).unwrap()[0].at("pendingRequest").clone();
+    assert!(!pending().is_null());
+    // A complete turn can happen between two status readings.
+    let index = w.state().arr("panes").iter().position(|p| p.s("pane_id") == pane).unwrap();
+    common::agents::play(&w.fake, index, "Option B");
+    on_pane(&w, &pane);
+    assert!(pending().is_null());
+}
